@@ -148,6 +148,15 @@ def main():
         border-radius: 8px; padding: 0.75rem 1rem;
     }
     p { line-height: 1.6; }
+    /* 项目记忆：搜索区与结果卡片 */
+    div[data-testid="stExpander"] summary {
+        font-size: 0.9rem; padding: 0.6rem 0.75rem;
+    }
+    .stSelectbox > div { border-radius: 8px; }
+    /* 信息提示框更柔和 */
+    [data-testid="stAlert"] { border-radius: 8px; }
+    /* 分隔线 */
+    hr { margin: 1.5rem 0; border-color: #e2e8f0; opacity: 0.8; }
     /* 隐藏 Streamlit 默认装饰 */
     #MainMenu { visibility: hidden; }
     footer { visibility: hidden; }
@@ -317,9 +326,9 @@ def main():
     with tab_memory:
         st.subheader(_get_text(T, "memory_tab.section_title") or "项目记忆（可搜索，供 Agent 保持对项目的熟悉）")
 
-        # 搜索与浏览
-        st.caption(_get_text(T, "memory_tab.caption_browse") or "干净的需求文档历史，供 Agent 与你查阅。")
-        col_search, col_filter = st.columns([1, 0.35])
+        # 搜索（仅搜索后显示结果）
+        st.caption(_get_text(T, "memory_tab.caption_browse") or "干净的需求文档历史。输入关键词搜索后显示匹配文档。")
+        col_search, col_filter = st.columns([1, 0.3])
         with col_search:
             kw = st.text_input(
                 _get_text(T, "memory_tab.search_label") or "搜索项目记忆",
@@ -335,11 +344,11 @@ def main():
             )
         entries = []
         if kw and kw.strip():
-            entries = search(kw, limit=25)
-        elif type_filter:
-            entries = list_for_browse(source_type_filter=type_filter, limit=25)
-        else:
-            entries = list_for_browse(limit=25)
+            raw = search(kw, limit=20)
+            if type_filter:
+                entries = [e for e in raw if e.get("source_type") == type_filter]
+            else:
+                entries = raw
         if entries:
             base = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
             for e in entries:
@@ -359,7 +368,7 @@ def main():
         elif kw and kw.strip():
             st.info(_get_text(T, "memory_tab.search_empty") or "未找到匹配文档。")
         else:
-            st.info(_get_text(T, "memory_tab.search_first") or "通过下方导入需求文档，或输入关键词搜索。")
+            st.info(_get_text(T, "memory_tab.search_first") or "输入关键词搜索，或通过下方导入后搜索。")
 
         st.divider()
         st.subheader(_get_text(T, "memory_tab.import_section") or "导入历史需求")
