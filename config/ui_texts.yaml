@@ -54,7 +54,6 @@ memory_tab:
   empty_hint: "暂无记录。可通过下方「从 Quip 文件夹导入」或「从本次运行更新」添加。"
   search_first: "输入关键词搜索，或通过下方导入后搜索。"
   search_empty: "未找到匹配文档。"
-  type_filter: "类型"
   caption_browse: "干净的需求文档历史。输入关键词搜索后显示匹配文档。"
   import_section: "导入历史需求"
   quip_token_import_label: "Quip Token（导入时使用，可与运行流水线共用）"
