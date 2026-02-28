@@ -26,7 +26,7 @@ from crew_test import (
     run_pipeline,
     update_project_memory,
 )
-from memory_store import add_entry, delete_entry, search, list_recent
+from memory_store import add_entry, delete_entry, list_for_browse, search, list_recent
 
 CONFIG_DIR = os.path.dirname(AGENTS_CONFIG_PATH)
 DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
@@ -317,19 +317,31 @@ def main():
     with tab_memory:
         st.subheader(_get_text(T, "memory_tab.section_title") or "项目记忆（可搜索，供 Agent 保持对项目的熟悉）")
 
-        # 搜索与浏览（仅搜索后显示结果）
-        st.caption(_get_text(T, "memory_tab.caption_browse") or "记录文档更新与需求逻辑；输入关键词搜索后显示匹配文档。")
-        kw = st.text_input(
-            _get_text(T, "memory_tab.search_label") or "搜索项目记忆",
-            placeholder=_get_text(T, "memory_tab.search_placeholder") or "输入关键词检索需求逻辑（如：直播分辨率、禁言、AB test）",
-            key="mem_search",
-        )
-        # 仅在有搜索词时展示结果，避免默认展开大量文档
+        # 搜索与浏览
+        st.caption(_get_text(T, "memory_tab.caption_browse") or "干净的需求文档历史，供 Agent 与你查阅。")
+        col_search, col_filter = st.columns([1, 0.35])
+        with col_search:
+            kw = st.text_input(
+                _get_text(T, "memory_tab.search_label") or "搜索项目记忆",
+                placeholder=_get_text(T, "memory_tab.search_placeholder") or "输入关键词检索",
+                key="mem_search",
+            )
+        with col_filter:
+            type_filter = st.selectbox(
+                _get_text(T, "memory_tab.type_filter") or "类型",
+                options=["", "quip_folder", "quip_single", "run_summary"],
+                format_func=lambda x: {"": "全部", "quip_folder": "需求(文件夹)", "quip_single": "需求(单文档)", "run_summary": "运行产出"}.get(x, x),
+                key="mem_type_filter",
+            )
         entries = []
         if kw and kw.strip():
-            entries = search(kw, limit=20)
+            entries = search(kw, limit=25)
+        elif type_filter:
+            entries = list_for_browse(source_type_filter=type_filter, limit=25)
+        else:
+            entries = list_for_browse(limit=25)
         if entries:
-            base = "https://quip.com"
+            base = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
             for e in entries:
                 label = f"【{e.get('source_type', '')}】{e.get('title', '') or e.get('source_id', '')} — {e.get('created_at', '')}"
                 col_title, col_del = st.columns([1, 0.12])
@@ -347,7 +359,7 @@ def main():
         elif kw and kw.strip():
             st.info(_get_text(T, "memory_tab.search_empty") or "未找到匹配文档。")
         else:
-            st.info(_get_text(T, "memory_tab.search_first") or "请输入关键词搜索，或通过下方导入后搜索。")
+            st.info(_get_text(T, "memory_tab.search_first") or "通过下方导入需求文档，或输入关键词搜索。")
 
         st.divider()
         st.subheader(_get_text(T, "memory_tab.import_section") or "导入历史需求")
@@ -417,12 +429,12 @@ def main():
         if st.button("从单文档导入"):
             if single_url and single_url.strip():
                 try:
-                    content = load_demand_from_quip(single_url.strip())
+                    content, doc_title = load_demand_from_quip(single_url.strip(), return_title=True)
                     keep, reason = is_product_requirement_doc("", content)
                     if not keep:
                         st.warning(f"该文档被识别为非需求文档（{reason}），已跳过导入。若确为需求文档，可在 config/doc_filter.yaml 中调整过滤规则。")
                     else:
-                        add_entry("quip_single", content, source_id=single_url.strip(), title="", summary=content[:500])
+                        add_entry("quip_single", content, source_id=single_url.strip(), title=doc_title, summary=content[:500])
                         st.success("已导入，可在上方搜索查看。")
                 except Exception as ex:
                     st.error(str(ex))

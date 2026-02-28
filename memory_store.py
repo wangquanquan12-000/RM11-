@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-项目记忆存储：结构化记录、可搜索、支持「最新需求逻辑」检索
+项目记忆存储：干净的需求文档历史，供 Agent 与用户查阅
+- 需求文档: quip_folder, quip_single（Agent 主要使用）
+- 运行产出: run_summary（可选供 Agent）
 """
 import sqlite3
 import os
@@ -9,6 +11,9 @@ from typing import Any
 
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 MEMORY_DB_PATH = os.path.join(CONFIG_DIR, "memory.db")
+
+# 视为「需求文档」的 source_type，供 Agent 使用
+DEMAND_SOURCE_TYPES = ("quip_folder", "quip_single")
 
 
 def _get_conn():
@@ -46,13 +51,31 @@ def add_entry(
     title: str = "",
     summary: str = "",
 ) -> int:
-    """添加一条记忆。source_type: manual | quip_single | quip_folder | run_summary"""
+    """添加或更新记忆。相同 source_type+source_id 时更新，避免重复。
+    source_type: manual | quip_single | quip_folder | run_summary"""
     conn = _get_conn()
     _ensure_tables(conn)
     now = datetime.now().isoformat()
+    sid = (source_id or "").strip()
+    # 有 source_id 时尝试 upsert（唯一索引可能不存在于旧库，先尝试）
+    if sid:
+        existing = conn.execute(
+            "SELECT id FROM memory_entries WHERE source_type = ? AND source_id = ?",
+            (source_type, sid),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE memory_entries SET created_at=?, title=?, content=?, summary=?
+                   WHERE source_type=? AND source_id=?""",
+                (now, title or "", content, summary or "", source_type, sid),
+            )
+            conn.commit()
+            rowid = existing["id"]
+            conn.close()
+            return rowid
     cur = conn.execute(
         "INSERT INTO memory_entries (created_at, source_type, source_id, title, content, summary) VALUES (?,?,?,?,?,?)",
-        (now, source_type, source_id, title or "", content, summary or ""),
+        (now, source_type, sid, title or "", content, summary or ""),
     )
     conn.commit()
     rowid = cur.lastrowid
@@ -137,16 +160,76 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def get_recent_for_agent(limit: int = 10, max_content_len: int = 3000) -> str:
-    """获取最近 N 条记录，格式化为 Agent 上下文字符串"""
-    entries = list_recent(limit=limit)
-    if not entries:
+def get_recent_for_agent(
+    limit: int = 10,
+    max_content_len: int = 3000,
+    demand_only: bool = True,
+) -> str:
+    """获取供 Agent 使用的需求文档上下文。
+    demand_only=True 时只取需求文档（quip_folder, quip_single），排除 run_summary。
+    按 source_id 去重取最新，保证干净。"""
+    conn = _get_conn()
+    _ensure_tables(conn)
+    if demand_only:
+        placeholders = ",".join(["?"] * len(DEMAND_SOURCE_TYPES))
+        rows = conn.execute(
+            f"""SELECT id, created_at, source_type, source_id, title, content, summary
+                FROM memory_entries
+                WHERE source_type IN ({placeholders})
+                ORDER BY created_at DESC
+                LIMIT ?""",
+            (*DEMAND_SOURCE_TYPES, limit * 2),  # 多取以便去重
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT id, created_at, source_type, source_id, title, content, summary
+               FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
+            (limit * 2,),
+        ).fetchall()
+    conn.close()
+    entries = [_row_to_dict(r) for r in rows]
+    # 按 source_id 去重，保留最新
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for e in entries:
+        sid = (e.get("source_id") or "").strip()
+        key = f"{e.get('source_type')}:{sid}" if sid else f"_{e.get('id')}"
+        if key not in seen:
+            seen.add(key)
+            unique.append(e)
+        if len(unique) >= limit:
+            break
+    if not unique:
         return ""
     parts = []
-    for e in entries:
-        title = e.get("title") or f"[{e.get('source_type')}]"
-        summary = (e.get("summary") or e.get("content", "")[:500]).strip()
-        if len(summary) > max_content_len // limit:
-            summary = summary[: max_content_len // limit] + "..."
+    per_len = max(200, max_content_len // len(unique))
+    for e in unique:
+        title = (e.get("title") or "").strip() or f"[{e.get('source_type')}]"
+        summary = (e.get("summary") or e.get("content", "")).strip()
+        if len(summary) > per_len:
+            summary = summary[:per_len] + "..."
         parts.append(f"【{title}】{e.get('created_at', '')}\n{summary}")
     return "\n\n---\n\n".join(parts)
+
+
+def list_for_browse(
+    source_type_filter: str = "",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """供用户浏览：按时间倒序，可选按类型筛选。source_type_filter 为空则全部。"""
+    conn = _get_conn()
+    _ensure_tables(conn)
+    if source_type_filter and source_type_filter.strip():
+        rows = conn.execute(
+            """SELECT id, created_at, source_type, source_id, title, content, summary
+               FROM memory_entries WHERE source_type = ? ORDER BY created_at DESC LIMIT ?""",
+            (source_type_filter.strip(), limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT id, created_at, source_type, source_id, title, content, summary
+               FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    conn.close()
+    return [_row_to_dict(r) for r in rows]

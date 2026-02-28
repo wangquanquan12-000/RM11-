@@ -1011,7 +1011,7 @@ def get_project_context_for_agent(include_store: bool = True) -> str:
         return md_ctx
     try:
         from memory_store import get_recent_for_agent
-        store_ctx = get_recent_for_agent(limit=10)
+        store_ctx = get_recent_for_agent(limit=10, demand_only=True)
         if store_ctx:
             md_ctx = (md_ctx + "\n\n【近期需求与产出记录】\n" + store_ctx).strip()
     except ImportError:

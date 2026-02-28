@@ -61,5 +61,24 @@ def test_delete_entry():
 
 
 def test_get_recent_for_agent():
-    s = ms.get_recent_for_agent(limit=2)
+    ms.add_entry("quip_folder", "需求内容", source_id="abc123", title="需求A")
+    s = ms.get_recent_for_agent(limit=2, demand_only=True)
     assert isinstance(s, str)
+    assert "需求A" in s or len(s) == 0
+
+
+def test_add_entry_upsert():
+    rid1 = ms.add_entry("quip_single", "v1", source_id="tid1", title="T1")
+    rid2 = ms.add_entry("quip_single", "v2", source_id="tid1", title="T1-upd")
+    assert rid1 == rid2
+    entries = ms.list_recent(limit=5)
+    match = [e for e in entries if e.get("source_id") == "tid1"]
+    assert len(match) == 1 and "v2" in (match[0].get("content") or "")
+
+
+def test_list_for_browse():
+    ms.add_entry("quip_folder", "x", title="X")
+    entries = ms.list_for_browse(limit=5)
+    assert isinstance(entries, list)
+    entries2 = ms.list_for_browse(source_type_filter="quip_folder", limit=5)
+    assert all(e.get("source_type") == "quip_folder" for e in entries2)
