@@ -1,4 +1,29 @@
+# 密钥与本地配置（勿提交）
 config/defaults.json
+.env
+.env.local
+*.pem
+
+# 项目记忆为运行期生成/编辑，可不提交
+config/project_memory.md
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
 .python-version
+
+# 运行产出（可选提交，通常忽略）
+output/
+*.xlsx
+*.log
+
+# IDE / 系统
+.DS_Store
+.idea/
+*.swp
+*.swo

@@ -1,0 +1,7 @@
+# Streamlit 配置（本地与 Cloud 通用）
+[server]
+port = 8501
+headless = true
+
+[browser]
+gatherUsageStats = false
