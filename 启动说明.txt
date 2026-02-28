@@ -1,10 +1,18 @@
-在终端执行下面一条命令即可启动（自动安装依赖并打开服务）：
-
+【本地运行】
   cd /Users/wangqilong/Desktop/自动化工作 && ./run_app.sh
+  然后浏览器打开： http://localhost:8501
 
-然后在浏览器打开： http://localhost:8501
+【生成永久链接（推 GitHub + Streamlit Cloud）】
+
+1) 在 GitHub 新建空仓库：打开 https://github.com/new ，仓库名自取（如 crew-test-app），不要勾选 README，创建。
+
+2) 在终端执行（把下面地址换成你自己的仓库地址）：
+   cd /Users/wangqilong/Desktop/自动化工作
+   ./push_to_github.sh https://github.com/你的用户名/仓库名.git
+
+3) 打开 https://share.streamlit.io → 用 GitHub 登录 → New app → 选刚推送的仓库，主文件填 app_ui.py → 在 Settings → Secrets 里填 QUIP_ACCESS_TOKEN 和 GEMINI_API_KEY。
+
+4) 部署完成后会得到永久链接： https://xxx.streamlit.app
 
 ---
-Windows 用户：双击 run_app.bat，或在 cmd 里执行：
-  cd /Users/wangqilong\Desktop\自动化工作
-  run_app.bat
+Windows 用户本地运行：双击 run_app.bat
