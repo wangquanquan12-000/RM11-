@@ -460,31 +460,42 @@ def main():
     # ---------- 与文档 Agent 沟通 ----------
     with tab_chat:
         st.subheader(_get_text(T, "chat_tab.section_title") or "与产品文档管理 Agent 沟通")
-        st.caption(_get_text(T, "chat_tab.section_desc") or "验证 Agent 对文档的理解，或就文档内容提问。Agent 基于你选择的文档上下文回答。")
+        st.caption(_get_text(T, "chat_tab.section_desc") or "Agent 可理解全部需求文档。选择项目整体记忆或手动填入 Quip 文档。")
 
         doc_source = st.radio(
             _get_text(T, "chat_tab.doc_source_label") or "文档来源",
-            options=["last_run", "memory", "paste"],
+            options=["memory", "paste"],
             format_func=lambda x: {
-                "last_run": _get_text(T, "chat_tab.doc_source_last_run") or "上次运行的需求",
-                "memory": _get_text(T, "chat_tab.doc_source_memory") or "项目记忆摘要",
-                "paste": _get_text(T, "chat_tab.doc_source_paste") or "手动粘贴",
+                "memory": _get_text(T, "chat_tab.doc_source_memory") or "项目整体记忆（全部需求文档）",
+                "paste": _get_text(T, "chat_tab.doc_source_paste") or "手动填入 Quip 文档",
             }[x],
             key="chat_doc_source",
         )
         doc_context = ""
-        if doc_source == "last_run":
-            doc_context = (st.session_state.get("last_demand_full") or st.session_state.get("last_demand_snippet") or "").strip()
+        if doc_source == "memory":
+            from memory_store import get_all_demands_full_for_chat
+            doc_context = get_all_demands_full_for_chat(limit=30).strip()
             if not doc_context:
-                st.info(_get_text(T, "chat_tab.doc_source_empty") or "（无）请先在运行流水线跑一次，或选择项目记忆/手动粘贴")
-        elif doc_source == "memory":
-            doc_context = get_project_context_for_agent(include_store=True).strip()
+                st.info(_get_text(T, "chat_tab.doc_source_empty") or "项目记忆暂无需求文档。请先在「项目记忆」页从 Quip 导入。")
         else:
-            doc_context = st.text_area(
-                _get_text(T, "chat_tab.paste_placeholder") or "在此粘贴需求文档内容…",
-                height=120,
-                key="chat_paste_doc",
-            ).strip()
+            quip_url_input = st.text_input(
+                _get_text(T, "chat_tab.quip_url_label") or "Quip 文档链接（可选，填写则自动拉取）",
+                placeholder="https://quip.com/xxx",
+                key="chat_quip_url",
+            )
+            if quip_url_input and quip_url_input.strip():
+                os.environ["QUIP_ACCESS_TOKEN"] = defaults.get("quip_token") or os.environ.get("QUIP_ACCESS_TOKEN", "")
+                try:
+                    doc_context, _ = load_demand_from_quip(quip_url_input.strip(), return_title=True)
+                except Exception as e:
+                    st.error(f"拉取失败: {e}")
+                    doc_context = ""
+            if not doc_context:
+                doc_context = st.text_area(
+                    _get_text(T, "chat_tab.paste_placeholder") or "或在此粘贴需求文档内容",
+                    height=150,
+                    key="chat_paste_doc",
+                ).strip()
 
         if "doc_chat_messages" not in st.session_state:
             st.session_state["doc_chat_messages"] = []

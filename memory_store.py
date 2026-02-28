@@ -212,6 +212,49 @@ def get_recent_for_agent(
     return "\n\n---\n\n".join(parts)
 
 
+def get_all_demands_full_for_chat(limit: int = 30, max_total_chars: int = 80000) -> str:
+    """获取全部需求文档的完整内容，供与 Agent 沟通时使用。Agent 可理解全部需求。
+    按 source_id 去重取最新，拼接完整 content。"""
+    conn = _get_conn()
+    _ensure_tables(conn)
+    placeholders = ",".join(["?"] * len(DEMAND_SOURCE_TYPES))
+    rows = conn.execute(
+        f"""SELECT id, created_at, source_type, source_id, title, content, summary
+            FROM memory_entries
+            WHERE source_type IN ({placeholders})
+            ORDER BY created_at DESC
+            LIMIT ?""",
+        (*DEMAND_SOURCE_TYPES, limit * 2),
+    ).fetchall()
+    conn.close()
+    entries = [_row_to_dict(r) for r in rows]
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for e in entries:
+        sid = (e.get("source_id") or "").strip()
+        key = f"{e.get('source_type')}:{sid}" if sid else f"_{e.get('id')}"
+        if key not in seen:
+            seen.add(key)
+            unique.append(e)
+        if len(unique) >= limit:
+            break
+    if not unique:
+        return ""
+    parts = []
+    total = 0
+    for e in unique:
+        title = (e.get("title") or "").strip() or f"[{e.get('source_type')}]"
+        content = (e.get("content") or e.get("summary") or "").strip()
+        block = f"【{title}】{e.get('created_at', '')}\n\n{content}"
+        if total + len(block) > max_total_chars:
+            block = block[: max_total_chars - total - 20] + "\n...(已截断)"
+        parts.append(block)
+        total += len(block)
+        if total >= max_total_chars:
+            break
+    return "\n\n---\n\n".join(parts)
+
+
 def list_for_browse(
     source_type_filter: str = "",
     limit: int = 50,

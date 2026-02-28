@@ -67,12 +67,12 @@ memory_tab:
 
 chat_tab:
   section_title: "与产品文档管理 Agent 沟通"
-  section_desc: "验证 Agent 对文档的理解，或就文档内容提问。Agent 基于你选择的文档上下文回答。"
+  section_desc: "Agent 可理解全部需求文档。选择项目整体记忆或手动填入 Quip 文档。"
   doc_source_label: "文档来源"
-  doc_source_last_run: "上次运行的需求"
-  doc_source_memory: "项目记忆摘要"
-  doc_source_paste: "手动粘贴"
-  doc_source_empty: "（无）请先在运行流水线跑一次，或选择项目记忆/手动粘贴"
+  doc_source_memory: "项目整体记忆（全部需求文档）"
+  doc_source_paste: "手动填入 Quip 文档"
+  doc_source_empty: "项目记忆暂无需求文档。请先在「项目记忆」页从 Quip 导入。"
+  quip_url_label: "Quip 文档链接（可选，填写则自动拉取）"
   paste_placeholder: "在此粘贴需求文档内容…"
   chat_placeholder: "输入问题，例如：请总结这份文档的核心需求、哪些地方描述不清、与 XX 功能的关联是什么…"
   send_btn: "发送"

@@ -76,6 +76,14 @@ def test_add_entry_upsert():
     assert len(match) == 1 and "v2" in (match[0].get("content") or "")
 
 
+def test_get_all_demands_full_for_chat():
+    ms.add_entry("quip_folder", "完整需求内容ABC", source_id="q1", title="需求Q1")
+    s = ms.get_all_demands_full_for_chat(limit=5)
+    assert isinstance(s, str)
+    assert "完整需求内容ABC" in s
+    assert "需求Q1" in s
+
+
 def test_list_for_browse():
     ms.add_entry("quip_folder", "x", title="X")
     entries = ms.list_for_browse(limit=5)

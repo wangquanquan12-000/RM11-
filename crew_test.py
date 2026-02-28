@@ -791,7 +791,7 @@ def chat_with_document_agent(
         )
 
     proj_ctx = f"\n\n【项目背景】\n{project_context}" if project_context and project_context.strip() else ""
-    doc_preview = document_context[:12000] + ("..." if len(document_context) > 12000 else "")
+    doc_preview = document_context[:60000] + ("..." if len(document_context) > 60000 else "")
 
     task = Task(
         description="""你是一位产品文档管理专家。用户会向你提问，你需要基于下方提供的【需求文档】内容回答。
