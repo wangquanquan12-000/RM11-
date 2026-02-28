@@ -314,8 +314,8 @@ def main():
         st.caption(_get_text(T, "memory_tab.filter_hint") or "拉取时会自动过滤测试用例、UI走查、进度汇总等非需求文档，仅导入 PRD。规则见 config/doc_filter.yaml")
         stable = _load_stable_quip_batch()
         with st.expander("分批拉取设置（降低 503 风险）", expanded=False):
-            batch_size = st.number_input("每批文档数", min_value=1, max_value=50, value=stable["batch_size"], help="遇 503 会自动降批；上次稳定值已预填")
-            batch_pause = st.number_input("批间暂停秒数", min_value=0, max_value=300, value=stable["batch_pause"], help="每批之间暂停，给 Quip API 恢复时间")
+            batch_size = st.number_input("每批文档数", min_value=1, max_value=50, value=int(stable["batch_size"]), help="遇 503 会自动降批；上次稳定值已预填")
+            batch_pause = st.number_input("批间暂停秒数", min_value=0, max_value=300, value=int(stable["batch_pause"]), help="每批之间暂停，给 Quip API 恢复时间")
         if st.button("从 Quip 文件夹批量导入"):
             if not folder_url or not folder_url.strip():
                 st.error("请填写 Quip 文件夹链接或 ID")
