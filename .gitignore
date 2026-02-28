@@ -1,0 +1,4 @@
+config/defaults.json
+__pycache__/
+*.pyc
+.python-version
