@@ -411,7 +411,7 @@ def _get_crew(stream: bool = False) -> Crew:
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     if not gemini_api_key:
         raise ValueError("ERROR: GEMINI_API_KEY 未设置，请设置环境变量后重试。")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=gemini_api_key,
@@ -731,7 +731,7 @@ def _get_crew_with_config(
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     if not gemini_api_key:
         raise ValueError("ERROR: GEMINI_API_KEY 未设置。")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=gemini_api_key,
@@ -760,7 +760,7 @@ def chat_with_document_agent(
     if not gemini_api_key:
         raise ValueError("GEMINI_API_KEY 未设置，请先配置。")
 
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=gemini_api_key,

@@ -57,29 +57,44 @@ def _save_stable_quip_batch(batch_size: int, batch_pause: float):
         json.dump({"batch_size": batch_size, "batch_pause": batch_pause}, f, ensure_ascii=False, indent=2)
 
 
+GEMINI_MODELS = [
+    ("gemini-1.5-flash", "1.5 Flash（免费实验推荐）"),
+    ("gemini-1.5-pro", "1.5 Pro（免费，质量高限额低）"),
+    ("gemini-2.5-flash-lite", "2.5 Flash-Lite（免费额度较高）"),
+    ("gemini-2.5-flash", "2.5 Flash（付费/免费皆可）"),
+]
+
+
 def _load_defaults():
-    """从环境变量或 config/defaults.json 读取默认 Token / API Key。"""
+    """从环境变量或 config/defaults.json 读取默认 Token / Key / 模型。"""
     import json
-    out = {"quip_token": "", "gemini_key": ""}
+    out = {"quip_token": "", "gemini_key": "", "gemini_model": "gemini-1.5-flash"}
     out["quip_token"] = os.getenv("QUIP_ACCESS_TOKEN", "")
     out["gemini_key"] = os.getenv("GEMINI_API_KEY", "")
+    out["gemini_model"] = os.getenv("GEMINI_MODEL", "")
     if os.path.isfile(DEFAULTS_PATH):
         try:
             with open(DEFAULTS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 out["quip_token"] = out["quip_token"] or data.get("quip_token", "")
                 out["gemini_key"] = out["gemini_key"] or data.get("gemini_key", "")
+                out["gemini_model"] = out["gemini_model"] or data.get("gemini_model", "gemini-1.5-flash")
         except Exception:
             pass
+    if not out["gemini_model"]:
+        out["gemini_model"] = "gemini-1.5-flash"
     return out
 
 
-def _save_defaults(quip_token: str, gemini_key: str):
-    """将默认 Token / Key 写入 config/defaults.json（本地仅自己使用）。"""
+def _save_defaults(quip_token: str, gemini_key: str, gemini_model: str = ""):
+    """将默认 Token / Key / 模型 写入 config/defaults.json（本地仅自己使用）。"""
     import json
     os.makedirs(CONFIG_DIR, exist_ok=True)
+    payload = {"quip_token": quip_token, "gemini_key": gemini_key}
+    if gemini_model:
+        payload["gemini_model"] = gemini_model
     with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
-        json.dump({"quip_token": quip_token, "gemini_key": gemini_key}, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def _load_ui_texts():
@@ -192,8 +207,17 @@ def main():
                 value=defaults["gemini_key"], type="password",
                 help=_get_text(T, "run_tab.gemini_key_help") or "用于驱动四个 Agent",
             )
+        _model_opts = [m[0] for m in GEMINI_MODELS]
+        _model_idx = next((i for i, (k, _) in enumerate(GEMINI_MODELS) if k == (defaults.get("gemini_model") or "gemini-1.5-flash")), 0)
+        gemini_model = st.selectbox(
+            _get_text(T, "run_tab.gemini_model_label") or "Gemini 模型",
+            options=_model_opts,
+            index=_model_idx,
+            format_func=lambda x: dict(GEMINI_MODELS).get(x, x),
+            help=_get_text(T, "run_tab.gemini_model_help") or "实验用免费模型（如 1.5-flash），正式导出用付费模型。",
+        )
         if st.button(_get_text(T, "run_tab.save_defaults_btn_full") or "保存为默认 Token/Key（仅写本地 config/defaults.json）"):
-            _save_defaults(quip_token or defaults["quip_token"], gemini_key or defaults["gemini_key"])
+            _save_defaults(quip_token or defaults["quip_token"], gemini_key or defaults["gemini_key"], gemini_model)
             st.success(_get_text(T, "run_tab.save_success") or "已保存到本地默认值")
             st.rerun()
 
@@ -211,6 +235,7 @@ def main():
             else:
                 os.environ["QUIP_ACCESS_TOKEN"] = quip_token or os.environ.get("QUIP_ACCESS_TOKEN", "")
                 os.environ["GEMINI_API_KEY"] = gemini_key or os.environ.get("GEMINI_API_KEY", "")
+                os.environ["GEMINI_MODEL"] = gemini_model or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
                 if not os.environ.get("GEMINI_API_KEY"):
                     st.error(_get_text(T, "run_tab.gemini_required") or "请填写 Gemini API Key 或保存默认值")
                 else:
@@ -512,6 +537,7 @@ def main():
                     with st.spinner(_get_text(T, "chat_tab.thinking") or "文档 Agent 正在思考…"):
                         try:
                             os.environ["GEMINI_API_KEY"] = defaults.get("gemini_key") or os.environ.get("GEMINI_API_KEY", "")
+                            os.environ["GEMINI_MODEL"] = defaults.get("gemini_model") or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
                             reply = chat_with_document_agent(
                                 user_message=user_q,
                                 document_context=doc_context,
@@ -530,6 +556,7 @@ def main():
                 with st.spinner(_get_text(T, "chat_tab.thinking") or "文档 Agent 正在思考…"):
                     try:
                         os.environ["GEMINI_API_KEY"] = defaults.get("gemini_key") or os.environ.get("GEMINI_API_KEY", "")
+                        os.environ["GEMINI_MODEL"] = defaults.get("gemini_model") or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
                         reply = chat_with_document_agent(
                             user_message=user_input,
                             document_context=doc_context,

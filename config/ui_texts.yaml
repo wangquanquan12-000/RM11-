@@ -19,6 +19,8 @@ run_tab:
   quip_token_help: "可从 https://quip.com/dev/token 生成"
   gemini_key_label: "Gemini API Key"
   gemini_key_help: "用于驱动四个 Agent"
+  gemini_model_label: "Gemini 模型"
+  gemini_model_help: "实验用免费模型（如 1.5-flash），正式导出用付费模型。"
   save_defaults_btn: "保存为默认 Token/Key"
   save_success: "已保存到本地默认值"
   export_quip: "导出到 Quip"
