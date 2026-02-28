@@ -324,7 +324,7 @@ def main():
             agents = config.get("agents") or []
             tasks = config.get("tasks") or []
             for i, a in enumerate(agents):
-                with st.expander(f"Agent: {a.get('role', a.get('id', ''))}", expanded=True):
+                with st.expander(f"Agent: {a.get('role', a.get('id', ''))}", expanded=False):
                     a_id = st.text_input("id", value=a.get("id", ""), key=f"agent_id_{i}")
                     a_role = st.text_input("role", value=a.get("role", ""), key=f"agent_role_{i}")
                     a_goal = st.text_area("goal", value=a.get("goal", ""), key=f"agent_goal_{i}", height=100)
