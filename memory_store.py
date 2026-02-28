@@ -61,22 +61,42 @@ def add_entry(
 
 
 def search(keyword: str, limit: int = 50) -> list[dict[str, Any]]:
-    """按关键词搜索，返回按时间倒序的结果（最新的在前）"""
+    """按关键词搜索，按相关性排序（匹配词越多越靠前），其次按时间倒序。"""
     if not keyword or not keyword.strip():
         return list_recent(limit=limit)
     conn = _get_conn()
     _ensure_tables(conn)
-    kw = f"%{keyword.strip()}%"
+    kw = keyword.strip()
+    # 多词：按空白切分，每个词都要匹配（AND），按匹配词数排序
+    terms = [t.strip() for t in kw.split() if t.strip()]
+    if not terms:
+        return list_recent(limit=limit)
+    where_clause = " AND ".join(
+        [f"(content LIKE ? OR summary LIKE ? OR title LIKE ?)" for _ in terms]
+    )
+    args_where = []
+    for t in terms:
+        p = f"%{t}%"
+        args_where.extend([p, p, p])
+    # 先取更多候选，再在 Python 中按相关性打分排序
     rows = conn.execute(
-        """SELECT id, created_at, source_type, source_id, title, content, summary
-           FROM memory_entries
-           WHERE content LIKE ? OR summary LIKE ? OR title LIKE ?
-           ORDER BY created_at DESC
-           LIMIT ?""",
-        (kw, kw, kw, limit),
+        f"""SELECT id, created_at, source_type, source_id, title, content, summary
+            FROM memory_entries
+            WHERE {where_clause}
+            ORDER BY created_at DESC
+            LIMIT ?""",
+        (*args_where, limit * 3),
     ).fetchall()
     conn.close()
-    return [_row_to_dict(r) for r in rows]
+    entries = [_row_to_dict(r) for r in rows]
+    if not entries:
+        return []
+    # 相关性：匹配到的词数越多、越靠前
+    def score(e):
+        text = f"{e.get('title','')} {e.get('summary','')} {e.get('content','')}"
+        return sum(1 for t in terms if t in text)
+    entries.sort(key=lambda e: (score(e), e.get("created_at", "")), reverse=True)
+    return entries[:limit]
 
 
 def list_recent(limit: int = 50) -> list[dict[str, Any]]:

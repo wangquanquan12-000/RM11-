@@ -19,6 +19,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -109,7 +110,7 @@ def _build_crew_from_config(
 # 需求加载（不依赖 API Key，可单独自检）
 # ---------------------------------------------------------------------------
 
-QUIP_API_BASE = "https://platform.quip.com/1"
+QUIP_API_BASE = os.getenv("QUIP_API_BASE", "https://platform.quip.com/1").rstrip("/")
 
 
 def _html_to_plain(html_str: str) -> str:
@@ -132,16 +133,26 @@ def _html_to_plain(html_str: str) -> str:
     return text.strip()
 
 
+def _extract_quip_id_from_url(value: str) -> str:
+    """从 Quip URL 提取 id（第一个路径段）。如 https://wegrowth.quip.com/0lXLAKptNvz1/goalPoll → 0lXLAKptNvz1"""
+    value = value.strip()
+    if not value or not value.startswith("http"):
+        return value
+    from urllib.parse import urlparse
+    parsed = urlparse(value)
+    path = (parsed.path or "").strip("/")
+    if path:
+        return path.split("/")[0]
+    return ""
+
+
 def _extract_quip_thread_id(value: str) -> str:
     """从 Quip 文档 URL 或纯 thread_id 中提取 thread_id。"""
     value = value.strip()
     if not value:
         return ""
-    # 若是 URL（如 https://quip.com/AbCdEf 或 https://xxx.quip.com/AbCdEf）
     if value.startswith("http"):
-        parts = value.rstrip("/").split("/")
-        if parts:
-            return parts[-1]
+        return _extract_quip_id_from_url(value)
     return value
 
 
@@ -169,14 +180,12 @@ def load_demand_from_quip(thread_id_or_url: str) -> str:
 
 
 def _extract_quip_id(value: str) -> str:
-    """从 Quip URL 或纯 id 中提取。URL 如 https://quip.com/XXXXX/名称 中 XXXXX 为 id。"""
+    """从 Quip URL 或纯 id 中提取。与 _extract_quip_thread_id 一致，适用于文件夹/文档。"""
     value = value.strip()
     if not value:
         return ""
     if value.startswith("http"):
-        parts = [p for p in value.rstrip("/").split("/") if p and "quip" not in p.lower() and "http" not in p.lower()]
-        if parts:
-            return parts[0]
+        return _extract_quip_id_from_url(value)
     return value
 
 
@@ -191,28 +200,45 @@ def get_quip_folder_thread_ids(folder_id_or_url: str) -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     seen: set[str] = set()
 
+    delay = float(os.getenv("QUIP_RATE_LIMIT_DELAY", "1.5"))  # 秒，避免 Over Rate Limit
+
     def _fetch_folder(fid: str) -> None:
         if fid in seen:
             return
         seen.add(fid)
+        time.sleep(delay)
         url = f"{QUIP_API_BASE}/folders/{fid}"
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace")
-            raise ValueError(f"Quip 文件夹请求失败 {e.code}: {body[:200]}") from e
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 503 and attempt < 2:
+                    time.sleep(60)
+                    continue
+                body = e.read().decode("utf-8", errors="replace")
+                raise ValueError(f"Quip 文件夹请求失败 {e.code}: {body[:200]}") from e
         children = data.get("children") or []
         for c in children:
             if "thread_id" in c:
                 tid = c["thread_id"]
                 title = ""
                 try:
+                    time.sleep(delay)
                     turl = f"{QUIP_API_BASE}/threads/{tid}"
                     treq = urllib.request.Request(turl, headers={"Authorization": f"Bearer {token}"})
-                    with urllib.request.urlopen(treq, timeout=15) as tr:
-                        tdata = json.loads(tr.read().decode("utf-8"))
+                    for _ in range(2):
+                        try:
+                            with urllib.request.urlopen(treq, timeout=15) as tr:
+                                tdata = json.loads(tr.read().decode("utf-8"))
+                            break
+                        except urllib.error.HTTPError as te:
+                            if te.code == 503:
+                                time.sleep(60)
+                                continue
+                            raise
                     thread = tdata.get("thread") or tdata
                     title = thread.get("title") or thread.get("link") or tid
                 except Exception:
@@ -230,11 +256,21 @@ def load_demands_from_quip_folder(
 ) -> list[dict[str, str]]:
     """从 Quip 文件夹批量导入需求文档。返回 [{thread_id, title, content, quip_url}, ...]。"""
     base_url = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
+    delay = float(os.getenv("QUIP_RATE_LIMIT_DELAY", "1.5"))
     pairs = get_quip_folder_thread_ids(folder_id_or_url)
     out: list[dict[str, str]] = []
     for tid, title in pairs:
         try:
-            content = load_demand_from_quip(tid)
+            time.sleep(delay)
+            for _ in range(3):
+                try:
+                    content = load_demand_from_quip(tid)
+                    break
+                except Exception as le:
+                    if "503" in str(le) and _ < 2:
+                        time.sleep(60)
+                        continue
+                    raise
             if content and content.strip():
                 out.append({
                     "thread_id": tid,
