@@ -188,7 +188,12 @@ def main():
             st.success(_get_text(T, "run_tab.save_success") or "已保存到本地默认值")
             st.rerun()
 
-        export_quip = st.checkbox(_get_text(T, "run_tab.export_quip") or "导出到 Quip 新文档", value=False)
+        export_quip = st.checkbox(_get_text(T, "run_tab.export_quip") or "导出到 Quip", value=False)
+        export_quip_target = st.text_input(
+            _get_text(T, "run_tab.export_quip_target_label") or "导出目标文档链接（可选，填写则追加到该文档，并自动写入需求标题+用例）",
+            placeholder=_get_text(T, "run_tab.export_quip_target_placeholder") or "https://quip.com/xxx 留空则新建文档",
+            key="export_quip_target",
+        )
         export_sheets = st.checkbox(_get_text(T, "run_tab.export_sheets") or "导出到 Google 表格", value=False)
 
         if st.button(_get_text(T, "run_tab.run_btn") or "运行流水线", type="primary"):
@@ -202,7 +207,7 @@ def main():
                 else:
                     with st.spinner(_get_text(T, "run_tab.run_spinner") or "正在从 Quip 拉取需求并运行四 Agent…"):
                         try:
-                            demand = load_demand_from_quip(quip_url.strip())
+                            demand, demand_title = load_demand_from_quip(quip_url.strip(), return_title=True)
                         except Exception as e:
                             st.error(f"{_get_text(T, 'run_tab.quip_fetch_fail') or '拉取 Quip 文档失败'}: {e}")
                             demand = None
@@ -212,8 +217,10 @@ def main():
                                     demand,
                                     output_dir=OUTPUT_DIR,
                                     export_excel=True,
-                                    export_quip=export_quip,
+                                    export_quip=export_quip or bool(export_quip_target and export_quip_target.strip()),
                                     export_sheets=export_sheets,
+                                    export_quip_target=(export_quip_target or "").strip() or None,
+                                    demand_title=demand_title,
                                     return_details=True,
                                 )
                             except Exception as e:

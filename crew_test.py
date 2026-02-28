@@ -209,8 +209,9 @@ def _extract_quip_thread_id(value: str) -> str:
     return value
 
 
-def load_demand_from_quip(thread_id_or_url: str) -> str:
-    """从 Quip 文档读取内容。需设置环境变量 QUIP_ACCESS_TOKEN。可传 thread_id 或文档 URL。"""
+def load_demand_from_quip(thread_id_or_url: str, return_title: bool = False) -> str | tuple[str, str]:
+    """从 Quip 文档读取内容。需设置环境变量 QUIP_ACCESS_TOKEN。可传 thread_id 或文档 URL。
+    若 return_title=True，返回 (content, title)。"""
     token = os.getenv("QUIP_ACCESS_TOKEN")
     if not token:
         raise ValueError("从 Quip 读取需设置环境变量 QUIP_ACCESS_TOKEN。请在 https://quip.com/dev/token 生成。")
@@ -229,6 +230,14 @@ def load_demand_from_quip(thread_id_or_url: str) -> str:
     plain = _html_to_plain(raw_html)
     if not plain:
         raise ValueError(f"Quip 文档 {thread_id} 无正文内容或无法解析。")
+    if return_title:
+        thread = data.get("thread") or (data.get(thread_id) or {}).get("thread") or data
+        if isinstance(thread, dict):
+            title = (thread.get("title") or thread.get("link") or "").strip()[:200]
+        else:
+            title = ""
+        fallback = (plain.split("\n")[0].strip() or "需求文档")[:100]
+        return plain, (title or fallback)
     return plain
 
 
@@ -859,6 +868,17 @@ def _export_to_excel(tables: list[list[list[str]]], excel_path: str) -> bool:
         return False
 
 
+def _tables_to_html(tables: list[list[list[str]]]) -> str:
+    """将表格列表转为 HTML 字符串。"""
+    rows_html = []
+    for tbl in tables:
+        for i, row in enumerate(tbl):
+            tag = "th" if i == 0 else "td"
+            cells = "".join(f"<{tag}>{html_lib.escape(c)}</{tag}>" for c in row)
+            rows_html.append(f"<tr>{cells}</tr>")
+    return "<table border=\"1\"><tbody>" + "".join(rows_html) + "</tbody></table>"
+
+
 def _export_to_quip_table(tables: list[list[list[str]]], title: str) -> str | None:
     """在 Quip 中新建文档并写入表格（HTML）。需 QUIP_ACCESS_TOKEN。返回新文档 URL 或 None。"""
     if not tables:
@@ -867,13 +887,7 @@ def _export_to_quip_table(tables: list[list[list[str]]], title: str) -> str | No
     if not token:
         print("提示: 导出到 Quip 需设置 QUIP_ACCESS_TOKEN", file=sys.stderr)
         return None
-    rows_html = []
-    for tbl in tables:
-        for i, row in enumerate(tbl):
-            tag = "th" if i == 0 else "td"
-            cells = "".join(f"<{tag}>{html_lib.escape(c)}</{tag}>" for c in row)
-            rows_html.append(f"<tr>{cells}</tr>")
-    table_html = "<table border=\"1\"><tbody>" + "".join(rows_html) + "</tbody></table>"
+    table_html = _tables_to_html(tables)
     body = f"<h1>{html_lib.escape(title)}</h1><p>以下为自动生成的测试用例表格。</p>{table_html}"
     url = f"{QUIP_API_BASE}/threads/new-document"
     data = urllib.parse.urlencode({"content": body, "format": "html", "title": title}).encode()
@@ -888,6 +902,42 @@ def _export_to_quip_table(tables: list[list[list[str]]], title: str) -> str | No
         return None
     except Exception as e:
         print(f"导出到 Quip 失败: {e}", file=sys.stderr)
+        return None
+
+
+def _export_to_quip_existing(
+    target_thread_id_or_url: str,
+    demand_title: str,
+    tables: list[list[list[str]]],
+) -> str | None:
+    """向指定 Quip 文档末尾追加「需求标题 + 测试用例表格」。需 QUIP_ACCESS_TOKEN。返回文档 URL 或 None。"""
+    if not tables:
+        return None
+    token = os.getenv("QUIP_ACCESS_TOKEN")
+    if not token:
+        print("提示: 导出到 Quip 需设置 QUIP_ACCESS_TOKEN", file=sys.stderr)
+        return None
+    thread_id = _extract_quip_thread_id(target_thread_id_or_url)
+    if not thread_id:
+        print("提示: 无法解析目标 Quip 文档 ID", file=sys.stderr)
+        return None
+    table_html = _tables_to_html(tables)
+    body = f"<h2>{html_lib.escape(demand_title)}</h2><p>以下为自动生成的测试用例。</p>{table_html}"
+    url = f"{QUIP_API_BASE}/threads/edit-document"
+    data = urllib.parse.urlencode({
+        "thread_id": thread_id,
+        "content": body,
+        "format": "html",
+        "location": "0",  # 0 = APPEND, 追加到文档末尾
+    }).encode()
+    req = urllib.request.Request(url, data=data, method="POST", headers={"Authorization": f"Bearer {token}", "Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            _ = json.loads(resp.read().decode())
+        base = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
+        return f"{base}/{thread_id}"
+    except Exception as e:
+        print(f"导出到指定 Quip 文档失败: {e}", file=sys.stderr)
         return None
 
 
@@ -1052,11 +1102,15 @@ def run_pipeline(
     export_excel: bool = True,
     export_quip: bool = False,
     export_sheets: bool = False,
+    export_quip_target: str | None = None,
+    demand_title: str | None = None,
     agents_config_path: str | None = None,
     project_context: str | None = None,
     return_details: bool = False,
 ) -> str | dict[str, Any]:
     """跑完整个流程，并把结果写入 output_dir。可同时导出 Excel / Quip / Google 表格。
+    - export_quip_target: 指定 Quip 文档链接时，将需求标题+用例追加到该文档末尾；否则新建文档。
+    - demand_title: 需求标题，用于导出到指定文档时的标题。
     若 return_details=True，返回 dict：result_str, step_outputs, excel_path, quip_url, sheets_url, timestamp；否则返回 result_str。"""
     if mock:
         return run_mock_pipeline(demand, output_dir)
@@ -1068,6 +1122,8 @@ def run_pipeline(
             export_quip=export_quip,
             export_sheets=export_sheets,
         )
+
+    do_export_quip = export_quip or bool(export_quip_target)
 
     use_config = bool(agents_config_path or os.path.isfile(AGENTS_CONFIG_PATH))
     proj_ctx = project_context if project_context is not None else get_project_context_for_agent()
@@ -1136,16 +1192,25 @@ def run_pipeline(
             if _export_to_excel(tables, excel_path):
                 if not stream:
                     print(f"Excel 已导出（可直接下载）: {excel_path}")
-        if export_quip:
-            quip_url = _export_to_quip_table(tables, f"测试用例_{timestamp}")
-            if quip_url and not stream:
-                print(f"Quip 文档已创建: {quip_url}")
+        if do_export_quip:
+            if export_quip_target:
+                quip_url = _export_to_quip_existing(
+                    export_quip_target,
+                    demand_title or "需求文档",
+                    tables,
+                )
+                if quip_url and not stream:
+                    print(f"已追加到 Quip 文档: {quip_url}")
+            else:
+                quip_url = _export_to_quip_table(tables, f"测试用例_{timestamp}")
+                if quip_url and not stream:
+                    print(f"Quip 文档已创建: {quip_url}")
         if export_sheets:
             sheets_url = _export_to_google_sheets(tables, f"测试用例_{timestamp}")
             if sheets_url and not stream:
                 print(f"Google 表格已创建: {sheets_url}")
     else:
-        if export_excel or export_quip or export_sheets:
+        if export_excel or do_export_quip or export_sheets:
             if not stream:
                 print("提示: 未从输出中解析到 Markdown 表格，未执行表格导出。", file=sys.stderr)
         excel_path = None
