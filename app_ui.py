@@ -20,10 +20,12 @@ from crew_test import (
     PROJECT_MEMORY_PATH,
     load_agents_config,
     load_demand_from_quip,
+    load_demands_from_quip_folder,
     load_project_memory,
     run_pipeline,
     update_project_memory,
 )
+from memory_store import add_entry, search, list_recent
 
 CONFIG_DIR = os.path.dirname(AGENTS_CONFIG_PATH)
 DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
@@ -190,21 +192,76 @@ def main():
 
     # ---------- 项目记忆 ----------
     with tab_memory:
-        st.subheader("项目记忆（供 Agent 保持对项目的熟悉）")
-        st.caption("此内容会注入到 Agent 的上下文中；文档增多后可在此维护摘要，或从「本次运行」自动追加。")
+        st.subheader("项目记忆（可搜索，供 Agent 保持对项目的熟悉）")
+
+        # 搜索与浏览
+        st.caption("记录文档更新与需求逻辑；支持关键词搜索，按时间倒序展示最新内容。")
+        kw = st.text_input("搜索项目记忆", placeholder="输入关键词检索需求逻辑（如：直播分辨率、禁言、AB test）", key="mem_search")
+        entries = search(kw, limit=30) if kw and kw.strip() else list_recent(limit=30)
+        if entries:
+            base = "https://quip.com"
+            for e in entries:
+                label = f"【{e.get('source_type', '')}】{e.get('title', '') or e.get('source_id', '')} — {e.get('created_at', '')}"
+                with st.expander(label, expanded=False):
+                    content = e.get("content", "") or e.get("summary", "")
+                    sid = e.get("source_id", "")
+                    src = f"{base}/{sid}" if sid and len(sid) >= 10 else sid
+                    st.caption(f"来源: {src}")
+                    st.markdown(content[:2000] + ("..." if len(content) > 2000 else ""))
+        else:
+            st.info("暂无记录。可通过下方「从 Quip 文件夹导入」或「从本次运行更新」添加。")
+
+        st.divider()
+        st.subheader("导入历史需求")
+        quip_for_import = st.text_input("Quip Token（导入时使用，可与运行流水线共用）", value=defaults["quip_token"], type="password", key="quip_token_import")
+
+        # 从 Quip 文件夹批量导入
+        folder_url = st.text_input("Quip 文件夹链接或 folder_id", placeholder="https://quip.com/XXXXX/文件夹名 或 12 字符 folder_id", key="quip_folder")
+        if st.button("从 Quip 文件夹批量导入"):
+            if not folder_url or not folder_url.strip():
+                st.error("请填写 Quip 文件夹链接或 ID")
+            else:
+                os.environ["QUIP_ACCESS_TOKEN"] = quip_for_import or os.getenv("QUIP_ACCESS_TOKEN", "")
+                if not os.environ.get("QUIP_ACCESS_TOKEN"):
+                    st.warning("请先在「运行流水线」页保存 Quip Token，或在环境变量中设置 QUIP_ACCESS_TOKEN")
+                else:
+                    with st.spinner("正在拉取文件夹内所有文档…"):
+                        try:
+                            docs = load_demands_from_quip_folder(folder_url.strip())
+                            for d in docs:
+                                add_entry("quip_folder", d["content"], source_id=d["thread_id"], title=d["title"], summary=d["content"][:500])
+                            st.success(f"已导入 {len(docs)} 条需求文档，可在上方搜索查看。")
+                        except Exception as ex:
+                            st.error(f"导入失败: {ex}")
+
+        # 从 Quip 单文档导入（补充：若用户只想导入单文档）
+        single_url = st.text_input("或导入单个 Quip 文档", placeholder="https://quip.com/xxx（可选）", key="quip_single")
+        if st.button("从单文档导入"):
+            if single_url and single_url.strip():
+                try:
+                    content = load_demand_from_quip(single_url.strip())
+                    add_entry("quip_single", content, source_id=single_url.strip(), title="", summary=content[:500])
+                    st.success("已导入，可在上方搜索查看。")
+                except Exception as ex:
+                    st.error(str(ex))
+
+        st.divider()
+        st.subheader("项目记忆摘要（手动编辑，注入 Agent 上下文）")
         mem = load_project_memory()
-        new_mem = st.text_area("项目记忆内容", value=mem, height=300, key="project_memory_text")
-        if st.button("保存项目记忆"):
+        new_mem = st.text_area("项目记忆内容", value=mem, height=200, key="project_memory_text")
+        if st.button("保存项目记忆摘要"):
             os.makedirs(CONFIG_DIR, exist_ok=True)
             with open(PROJECT_MEMORY_PATH, "w", encoding="utf-8") as f:
                 f.write(new_mem)
             st.success("已保存")
-        if st.button("从本次运行更新（追加摘要）"):
+
+        if st.button("从本次运行更新（追加摘要到记忆库 + 摘要文件）"):
             if st.session_state.get("last_run") and st.session_state.get("last_demand_snippet"):
                 snippet = st.session_state["last_demand_snippet"]
                 result = st.session_state["last_run"].get("result_str", "")[:2000]
                 addition = f"【最近一次需求摘要】\n{snippet}\n\n【产出摘要】\n{result}"
                 update_project_memory(addition)
+                add_entry("run_summary", result, title="最近一次运行", summary=snippet)
                 st.success("已追加到项目记忆；Agent 下次运行将带上这些上下文。")
             else:
                 st.info("请先运行一次流水线后再点击「从本次运行更新」。")

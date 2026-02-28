@@ -168,6 +168,85 @@ def load_demand_from_quip(thread_id_or_url: str) -> str:
     return plain
 
 
+def _extract_quip_id(value: str) -> str:
+    """从 Quip URL 或纯 id 中提取。URL 如 https://quip.com/XXXXX/名称 中 XXXXX 为 id。"""
+    value = value.strip()
+    if not value:
+        return ""
+    if value.startswith("http"):
+        parts = [p for p in value.rstrip("/").split("/") if p and "quip" not in p.lower() and "http" not in p.lower()]
+        if parts:
+            return parts[0]
+    return value
+
+
+def get_quip_folder_thread_ids(folder_id_or_url: str) -> list[tuple[str, str]]:
+    """获取 Quip 文件夹内所有文档的 (thread_id, title)。递归遍历子文件夹。需 QUIP_ACCESS_TOKEN。"""
+    token = os.getenv("QUIP_ACCESS_TOKEN")
+    if not token:
+        raise ValueError("从 Quip 读取需设置环境变量 QUIP_ACCESS_TOKEN。")
+    folder_id = _extract_quip_id(folder_id_or_url)
+    if not folder_id:
+        raise ValueError("Quip 文件夹 ID 或 URL 不能为空。")
+    result: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def _fetch_folder(fid: str) -> None:
+        if fid in seen:
+            return
+        seen.add(fid)
+        url = f"{QUIP_API_BASE}/folders/{fid}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            raise ValueError(f"Quip 文件夹请求失败 {e.code}: {body[:200]}") from e
+        children = data.get("children") or []
+        for c in children:
+            if "thread_id" in c:
+                tid = c["thread_id"]
+                title = ""
+                try:
+                    turl = f"{QUIP_API_BASE}/threads/{tid}"
+                    treq = urllib.request.Request(turl, headers={"Authorization": f"Bearer {token}"})
+                    with urllib.request.urlopen(treq, timeout=15) as tr:
+                        tdata = json.loads(tr.read().decode("utf-8"))
+                    thread = tdata.get("thread") or tdata
+                    title = thread.get("title") or thread.get("link") or tid
+                except Exception:
+                    pass
+                result.append((tid, title or tid))
+            elif "folder_id" in c:
+                _fetch_folder(c["folder_id"])
+
+    _fetch_folder(folder_id)
+    return result
+
+
+def load_demands_from_quip_folder(
+    folder_id_or_url: str,
+) -> list[dict[str, str]]:
+    """从 Quip 文件夹批量导入需求文档。返回 [{thread_id, title, content, quip_url}, ...]。"""
+    base_url = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
+    pairs = get_quip_folder_thread_ids(folder_id_or_url)
+    out: list[dict[str, str]] = []
+    for tid, title in pairs:
+        try:
+            content = load_demand_from_quip(tid)
+            if content and content.strip():
+                out.append({
+                    "thread_id": tid,
+                    "title": title,
+                    "content": content,
+                    "quip_url": f"{base_url}/{tid}",
+                })
+        except Exception:
+            continue
+    return out
+
+
 def load_demand(file_path: str | None) -> str:
     """从文件或环境变量或默认值加载需求文本。优先：文件 > 环境变量 DEMAND > 默认字符串。"""
     if file_path and os.path.isfile(file_path):
@@ -668,6 +747,21 @@ def load_project_memory(path: str | None = None) -> str:
         return ""
 
 
+def get_project_context_for_agent(include_store: bool = True) -> str:
+    """获取供 Agent 使用的项目上下文：md 文件 + 记忆库近期记录。"""
+    md_ctx = load_project_memory()
+    if not include_store:
+        return md_ctx
+    try:
+        from memory_store import get_recent_for_agent
+        store_ctx = get_recent_for_agent(limit=10)
+        if store_ctx:
+            md_ctx = (md_ctx + "\n\n【近期需求与产出记录】\n" + store_ctx).strip()
+    except ImportError:
+        pass
+    return md_ctx
+
+
 def update_project_memory(addition: str, path: str | None = None, max_chars: int = 20000) -> None:
     """在项目记忆文件末尾追加一段摘要，便于 Agent 保持对项目的熟悉。若超过 max_chars 则只保留尾部。"""
     p = path or PROJECT_MEMORY_PATH
@@ -769,7 +863,7 @@ def run_pipeline(
         )
 
     use_config = bool(agents_config_path or os.path.isfile(AGENTS_CONFIG_PATH))
-    proj_ctx = project_context if project_context is not None else load_project_memory()
+    proj_ctx = project_context if project_context is not None else get_project_context_for_agent()
     stream = return_details
 
     if use_config and yaml:
