@@ -29,7 +29,31 @@ from memory_store import add_entry, search, list_recent
 
 CONFIG_DIR = os.path.dirname(AGENTS_CONFIG_PATH)
 DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
+STABLE_QUIP_BATCH_PATH = os.path.join(CONFIG_DIR, "stable_quip_batch.json")
 OUTPUT_DIR = "output"
+
+
+def _load_stable_quip_batch():
+    """读取上次保存的稳定拉取参数。"""
+    import json
+    out = {"batch_size": 10, "batch_pause": 60}
+    if os.path.isfile(STABLE_QUIP_BATCH_PATH):
+        try:
+            with open(STABLE_QUIP_BATCH_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                out["batch_size"] = data.get("batch_size", 10)
+                out["batch_pause"] = data.get("batch_pause", 60)
+        except Exception:
+            pass
+    return out
+
+
+def _save_stable_quip_batch(batch_size: int, batch_pause: float):
+    """保存稳定拉取参数，供下次使用。"""
+    import json
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(STABLE_QUIP_BATCH_PATH, "w", encoding="utf-8") as f:
+        json.dump({"batch_size": batch_size, "batch_pause": batch_pause}, f, ensure_ascii=False, indent=2)
 
 
 def _load_defaults():
@@ -217,6 +241,10 @@ def main():
 
         # 从 Quip 文件夹批量导入
         folder_url = st.text_input("Quip 文件夹链接或 folder_id", placeholder="https://quip.com/XXXXX/文件夹名 或 12 字符 folder_id", key="quip_folder")
+        stable = _load_stable_quip_batch()
+        with st.expander("分批拉取设置（降低 503 风险）", expanded=False):
+            batch_size = st.number_input("每批文档数", min_value=1, max_value=50, value=stable["batch_size"], help="遇 503 会自动降批；上次稳定值已预填")
+            batch_pause = st.number_input("批间暂停秒数", min_value=0, max_value=300, value=stable["batch_pause"], help="每批之间暂停，给 Quip API 恢复时间")
         if st.button("从 Quip 文件夹批量导入"):
             if not folder_url or not folder_url.strip():
                 st.error("请填写 Quip 文件夹链接或 ID")
@@ -225,14 +253,34 @@ def main():
                 if not os.environ.get("QUIP_ACCESS_TOKEN"):
                     st.warning("请先在「运行流水线」页保存 Quip Token，或在环境变量中设置 QUIP_ACCESS_TOKEN")
                 else:
-                    with st.spinner("正在拉取文件夹内所有文档…"):
-                        try:
-                            docs = load_demands_from_quip_folder(folder_url.strip())
-                            for d in docs:
-                                add_entry("quip_folder", d["content"], source_id=d["thread_id"], title=d["title"], summary=d["content"][:500])
-                            st.success(f"已导入 {len(docs)} 条需求文档，可在上方搜索查看。")
-                        except Exception as ex:
-                            st.error(f"导入失败: {ex}")
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    progress_info = {}
+                    def on_progress(cur, tot, msg):
+                        if tot > 0:
+                            progress_bar.progress(min(1.0, cur / tot))
+                        status_text.caption(f"正在拉取 {cur}/{tot}: {(msg or '')[:60]}{'…' if len(msg or '') > 60 else ''}")
+                    try:
+                        docs, stats = load_demands_from_quip_folder(
+                            folder_url.strip(),
+                            progress_callback=on_progress,
+                            batch_size=int(batch_size),
+                            batch_pause=float(batch_pause),
+                            progress_info=progress_info,
+                        )
+                        for d in docs:
+                            add_entry("quip_folder", d["content"], source_id=d["thread_id"], title=d["title"], summary=d["content"][:500])
+                        progress_bar.progress(1.0)
+                        status_text.caption("")
+                        _save_stable_quip_batch(stats["stable_batch_size"], stats["stable_batch_pause"])
+                        msg = f"已导入 {len(docs)} 条需求文档，可在上方搜索查看。"
+                        if stats.get("batch_reduced"):
+                            msg += f" 本次遇 503 已自动降批，稳定批次：每批 {stats['stable_batch_size']} 个，已保存供下次使用。"
+                        else:
+                            msg += f" 当前稳定批次：每批 {stats['stable_batch_size']} 个。"
+                        st.success(msg)
+                    except Exception as ex:
+                        st.error(f"导入失败: {ex}")
 
         # 从 Quip 单文档导入（补充：若用户只想导入单文档）
         single_url = st.text_input("或导入单个 Quip 文档", placeholder="https://quip.com/xxx（可选）", key="quip_single")

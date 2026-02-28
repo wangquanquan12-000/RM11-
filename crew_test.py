@@ -24,7 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from crewai import Agent, Task, Crew
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -253,22 +253,46 @@ def get_quip_folder_thread_ids(folder_id_or_url: str) -> list[tuple[str, str]]:
 
 def load_demands_from_quip_folder(
     folder_id_or_url: str,
-) -> list[dict[str, str]]:
-    """从 Quip 文件夹批量导入需求文档。返回 [{thread_id, title, content, quip_url}, ...]。"""
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    batch_size: int = 10,
+    batch_pause: float = 60.0,
+    progress_info: dict | None = None,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """从 Quip 文件夹批量导入需求文档。遇 503 自动降批直到不报错，并返回稳定参数供保存。
+    返回 (docs, {"stable_batch_size", "stable_batch_pause", "batch_reduced"})。"""
     base_url = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
     delay = float(os.getenv("QUIP_RATE_LIMIT_DELAY", "1.5"))
     pairs = get_quip_folder_thread_ids(folder_id_or_url)
+    total = len(pairs)
     out: list[dict[str, str]] = []
-    for tid, title in pairs:
+    docs_in_batch = 0
+    batch_reduced = False
+    i = 0
+    while i < len(pairs):
+        tid, title = pairs[i]
+        if progress_callback:
+            progress_callback(i, total, title or tid)
+        if docs_in_batch >= batch_size and batch_size > 0:
+            time.sleep(batch_pause)
+            docs_in_batch = 0  # 批间暂停后重置计数
         try:
             time.sleep(delay)
-            for _ in range(3):
+            content = None
+            for attempt in range(5):
                 try:
                     content = load_demand_from_quip(tid)
                     break
                 except Exception as le:
-                    if "503" in str(le) and _ < 2:
-                        time.sleep(60)
+                    if "503" in str(le) and attempt < 4:
+                        batch_size = max(1, batch_size - 1)
+                        docs_in_batch = 0
+                        batch_reduced = True
+                        if progress_info is not None:
+                            progress_info["batch_size"] = batch_size
+                            progress_info["batch_reduced"] = True
+                        if progress_callback:
+                            progress_callback(i, total, f"503 限流，降批至 {batch_size}，等待后重试…")
+                        time.sleep(120)
                         continue
                     raise
             if content and content.strip():
@@ -278,9 +302,17 @@ def load_demands_from_quip_folder(
                     "content": content,
                     "quip_url": f"{base_url}/{tid}",
                 })
+                docs_in_batch += 1
         except Exception:
-            continue
-    return out
+            pass
+        i += 1
+    if progress_callback:
+        progress_callback(total, total, "完成")
+    return out, {
+        "stable_batch_size": batch_size,
+        "stable_batch_pause": batch_pause,
+        "batch_reduced": batch_reduced,
+    }
 
 
 def load_demand(file_path: str | None) -> str:

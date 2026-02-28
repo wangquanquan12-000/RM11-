@@ -7,6 +7,7 @@ config/defaults.json
 # 项目记忆为运行期生成/编辑，可不提交
 config/project_memory.md
 config/memory.db
+config/stable_quip_batch.json
 
 # Python
 __pycache__/
