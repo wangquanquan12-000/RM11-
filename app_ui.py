@@ -111,14 +111,47 @@ def main():
     st.set_page_config(page_title=page_title, layout="wide", initial_sidebar_state="collapsed")
     st.markdown("""
     <style>
-    /* 简洁风格 */
-    .main .block-container { padding-top: 1.5rem; padding-bottom: 2rem; max-width: 960px; }
-    h1 { font-size: 1.6rem !important; font-weight: 600 !important; color: #1e293b !important; margin-bottom: 0.5rem !important; }
-    h2 { font-size: 1.1rem !important; font-weight:500 !important; color: #475569 !important; }
-    .stTabs [data-baseweb="tab-list"] { gap: 0.5rem; }
-    .stTabs [data-baseweb="tab"] { padding: 0.5rem 1rem; font-size: 0.95rem; }
-    div[data-testid="stExpander"] { border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 0.5rem; }
-    .stButton > button { border-radius: 6px; font-weight: 500; }
+    /* 优化 UI：简洁专业 */
+    .main .block-container { padding-top: 1.2rem; padding-bottom: 2.5rem; max-width: 900px; }
+    h1 {
+        font-size: 1.5rem !important; font-weight: 600 !important;
+        color: #0f172a !important; margin-bottom: 0.8rem !important;
+        letter-spacing: -0.02em; line-height: 1.3;
+    }
+    h2 {
+        font-size: 1.05rem !important; font-weight: 500 !important;
+        color: #475569 !important; margin-top: 1.2rem !important; margin-bottom: 0.6rem !important;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0.25rem; margin-bottom: 1rem;
+        border-bottom: 1px solid #e2e8f0;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 0.5rem 1rem; font-size: 0.9rem; font-weight: 500;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #0d9488; border-bottom: 2px solid #0d9488; margin-bottom: -1px;
+    }
+    div[data-testid="stExpander"] {
+        border: 1px solid #e2e8f0; border-radius: 8px;
+        margin-bottom: 0.5rem; background: #fafafa;
+    }
+    div[data-testid="stExpander"] > div:first-child { border-radius: 8px; }
+    .stButton > button {
+        border-radius: 8px; font-weight: 500;
+        transition: opacity 0.15s;
+    }
+    .stButton > button:hover { opacity: 0.9; }
+    [data-testid="stMetricValue"] { font-weight: 600; }
+    .stTextInput > div > div { border-radius: 8px; }
+    .stSuccess, .stInfo, .stWarning, .stError {
+        border-radius: 8px; padding: 0.75rem 1rem;
+    }
+    p { line-height: 1.6; }
+    /* 隐藏 Streamlit 默认装饰 */
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
+    header { visibility: hidden; }
     </style>
     """, unsafe_allow_html=True)
     st.title(app_title)
