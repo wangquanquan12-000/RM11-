@@ -1,0 +1,76 @@
+# 网页文案配置 - 在此编辑即可生效，无需改代码
+# 修改后刷新页面即可看到效果
+
+app:
+  title: "需求 → 测试用例流水线"
+  page_title: "需求 → 测试用例流水线"
+
+tabs:
+  run: "运行流水线"
+  agents: "编辑 Agent"
+  memory: "项目记忆"
+  chat: "与文档 Agent 沟通"
+
+run_tab:
+  section_config: "输入与配置"
+  quip_url_label: "Quip 文档链接或 thread_id"
+  quip_url_placeholder: "https://quip.com/xxx 或 thread_id"
+  quip_token_label: "Quip Access Token"
+  quip_token_help: "可从 https://quip.com/dev/token 生成"
+  gemini_key_label: "Gemini API Key"
+  gemini_key_help: "用于驱动四个 Agent"
+  save_defaults_btn: "保存为默认 Token/Key"
+  save_success: "已保存到本地默认值"
+  export_quip: "导出到 Quip 新文档"
+  export_sheets: "导出到 Google 表格"
+  run_btn: "运行流水线"
+  section_steps: "Agent 沟通过程"
+  section_result: "最终结果"
+  section_links: "表格链接"
+  download_excel: "下载 Excel"
+  save_defaults_btn_full: "保存为默认 Token/Key（仅写本地 config/defaults.json）"
+  quip_url_required: "请填写 Quip 文档链接或 thread_id"
+  gemini_required: "请填写 Gemini API Key 或保存默认值"
+  quip_fetch_fail: "拉取 Quip 文档失败"
+  pipeline_fail: "流水线执行失败"
+  run_spinner: "正在从 Quip 拉取需求并运行四 Agent…"
+  run_success: "流水线执行完成"
+  no_step_output: "本次未采集到分步输出（可能未使用 stream），下方为最终结果。"
+  excel_path_label: "本地路径"
+  excel_not_found: "未生成 Excel 或文件不存在"
+  quip_doc_label: "Quip 文档"
+  google_sheets_label: "Google 表格"
+  result_saved: "完整结果已保存"
+
+agents_tab:
+  section_title: "编辑四 Agent 定义与 Task"
+
+memory_tab:
+  section_title: "项目记忆（可搜索，供 Agent 保持对项目的熟悉）"
+  search_label: "搜索项目记忆"
+  search_placeholder: "输入关键词检索需求逻辑（如：直播分辨率、禁言、AB test）"
+  empty_hint: "暂无记录。可通过下方「从 Quip 文件夹导入」或「从本次运行更新」添加。"
+  caption_browse: "记录文档更新与需求逻辑；支持关键词搜索，按时间倒序展示最新内容。"
+  import_section: "导入历史需求"
+  quip_token_import_label: "Quip Token（导入时使用，可与运行流水线共用）"
+  folder_label: "Quip 文件夹链接或 folder_id"
+  folder_placeholder: "https://quip.com/XXXXX/文件夹名 或 12 字符 folder_id"
+  filter_hint: "拉取时会自动过滤测试用例、UI走查、进度汇总等非需求文档，仅导入 PRD。规则见 config/doc_filter.yaml"
+  single_label: "或导入单个 Quip 文档"
+  single_placeholder: "https://quip.com/xxx（可选）"
+  memory_summary_section: "项目记忆摘要（手动编辑，注入 Agent 上下文）"
+  memory_text_label: "项目记忆内容"
+
+chat_tab:
+  section_title: "与产品文档管理 Agent 沟通"
+  section_desc: "验证 Agent 对文档的理解，或就文档内容提问。Agent 基于你选择的文档上下文回答。"
+  doc_source_label: "文档来源"
+  doc_source_last_run: "上次运行的需求"
+  doc_source_memory: "项目记忆摘要"
+  doc_source_paste: "手动粘贴"
+  doc_source_empty: "（无）请先在运行流水线跑一次，或选择项目记忆/手动粘贴"
+  paste_placeholder: "在此粘贴需求文档内容…"
+  chat_placeholder: "输入问题，例如：请总结这份文档的核心需求、哪些地方描述不清、与 XX 功能的关联是什么…"
+  send_btn: "发送"
+  quick_summary: "请总结这份文档的核心要点与潜在风险"
+  thinking: "文档 Agent 正在思考…"

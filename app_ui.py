@@ -1,11 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 可视化界面：Quip 文档链接 → 四 Agent 流水线 → 表格链接
-- 支持默认填入 Quip Token、Gemini API Key
-- 显示 Agent 沟通过程（步骤输出）
-- 生成可打开的表格链接（Excel 下载、Quip 文档、Google 表格）
-- 编辑四个 Agent 定义并可扩展
-- 项目记忆：Agent 可据此保持对项目的熟悉，支持从本次运行更新
+文案可在 config/ui_texts.yaml 中编辑，无需改代码。
 """
 import os
 import sys
@@ -15,9 +11,14 @@ import streamlit as st
 # 将项目根目录加入 path，以便导入 crew_test
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+UI_TEXTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "ui_texts.yaml")
+
 from crew_test import (
     AGENTS_CONFIG_PATH,
     PROJECT_MEMORY_PATH,
+    chat_with_document_agent,
+    get_project_context_for_agent,
+    is_product_requirement_doc,
     load_agents_config,
     load_demand_from_quip,
     load_demands_from_quip_folder,
@@ -81,44 +82,96 @@ def _save_defaults(quip_token: str, gemini_key: str):
         json.dump({"quip_token": quip_token, "gemini_key": gemini_key}, f, ensure_ascii=False, indent=2)
 
 
-def main():
-    st.set_page_config(page_title="需求 → 测试用例流水线", layout="wide")
-    st.title("需求 → 测试用例流水线")
-    defaults = _load_defaults()
+def _load_ui_texts():
+    """从 config/ui_texts.yaml 加载文案，便于编辑。"""
+    try:
+        import yaml
+        if os.path.isfile(UI_TEXTS_PATH):
+            with open(UI_TEXTS_PATH, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    return {}
 
-    tab_run, tab_agents, tab_memory = st.tabs(["运行流水线", "编辑 Agent", "项目记忆"])
+
+def _get_text(data: dict, path: str, default: str = "") -> str:
+    """从嵌套 dict 取文案，如 app.title。"""
+    keys = path.split(".")
+    for k in keys:
+        if not isinstance(data, dict):
+            return default
+        data = data.get(k, {})
+    return data if isinstance(data, str) else default
+
+
+def main():
+    T = _load_ui_texts()
+    page_title = _get_text(T, "app.page_title") or "需求 → 测试用例流水线"
+    app_title = _get_text(T, "app.title") or page_title
+    st.set_page_config(page_title=page_title, layout="wide", initial_sidebar_state="collapsed")
+    st.markdown("""
+    <style>
+    /* 简洁风格 */
+    .main .block-container { padding-top: 1.5rem; padding-bottom: 2rem; max-width: 960px; }
+    h1 { font-size: 1.6rem !important; font-weight: 600 !important; color: #1e293b !important; margin-bottom: 0.5rem !important; }
+    h2 { font-size: 1.1rem !important; font-weight:500 !important; color: #475569 !important; }
+    .stTabs [data-baseweb="tab-list"] { gap: 0.5rem; }
+    .stTabs [data-baseweb="tab"] { padding: 0.5rem 1rem; font-size: 0.95rem; }
+    div[data-testid="stExpander"] { border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 0.5rem; }
+    .stButton > button { border-radius: 6px; font-weight: 500; }
+    </style>
+    """, unsafe_allow_html=True)
+    st.title(app_title)
+    defaults = _load_defaults()
+    tab_run, tab_agents, tab_memory, tab_chat = st.tabs([
+        _get_text(T, "tabs.run") or "运行流水线",
+        _get_text(T, "tabs.agents") or "编辑 Agent",
+        _get_text(T, "tabs.memory") or "项目记忆",
+        _get_text(T, "tabs.chat") or "与文档 Agent 沟通",
+    ])
 
     # ---------- 运行流水线 ----------
     with tab_run:
-        st.subheader("输入与配置")
-        quip_url = st.text_input("Quip 文档链接或 thread_id", placeholder="https://quip.com/xxx 或 thread_id")
+        st.subheader(_get_text(T, "run_tab.section_config") or "输入与配置")
+        quip_url = st.text_input(
+            _get_text(T, "run_tab.quip_url_label") or "Quip 文档链接或 thread_id",
+            placeholder=_get_text(T, "run_tab.quip_url_placeholder") or "https://quip.com/xxx 或 thread_id",
+        )
         col1, col2 = st.columns(2)
         with col1:
-            quip_token = st.text_input("Quip Access Token", value=defaults["quip_token"], type="password", help="可从 https://quip.com/dev/token 生成")
+            quip_token = st.text_input(
+                _get_text(T, "run_tab.quip_token_label") or "Quip Access Token",
+                value=defaults["quip_token"], type="password",
+                help=_get_text(T, "run_tab.quip_token_help") or "可从 https://quip.com/dev/token 生成",
+            )
         with col2:
-            gemini_key = st.text_input("Gemini API Key", value=defaults["gemini_key"], type="password", help="用于驱动四个 Agent")
-        if st.button("保存为默认 Token/Key（仅写本地 config/defaults.json）"):
+            gemini_key = st.text_input(
+                _get_text(T, "run_tab.gemini_key_label") or "Gemini API Key",
+                value=defaults["gemini_key"], type="password",
+                help=_get_text(T, "run_tab.gemini_key_help") or "用于驱动四个 Agent",
+            )
+        if st.button(_get_text(T, "run_tab.save_defaults_btn_full") or "保存为默认 Token/Key（仅写本地 config/defaults.json）"):
             _save_defaults(quip_token or defaults["quip_token"], gemini_key or defaults["gemini_key"])
-            st.success("已保存到本地默认值")
+            st.success(_get_text(T, "run_tab.save_success") or "已保存到本地默认值")
             st.rerun()
 
-        export_quip = st.checkbox("导出到 Quip 新文档", value=False)
-        export_sheets = st.checkbox("导出到 Google 表格", value=False)
+        export_quip = st.checkbox(_get_text(T, "run_tab.export_quip") or "导出到 Quip 新文档", value=False)
+        export_sheets = st.checkbox(_get_text(T, "run_tab.export_sheets") or "导出到 Google 表格", value=False)
 
-        if st.button("运行流水线", type="primary"):
+        if st.button(_get_text(T, "run_tab.run_btn") or "运行流水线", type="primary"):
             if not quip_url or not quip_url.strip():
-                st.error("请填写 Quip 文档链接或 thread_id")
+                st.error(_get_text(T, "run_tab.quip_url_required") or "请填写 Quip 文档链接或 thread_id")
             else:
                 os.environ["QUIP_ACCESS_TOKEN"] = quip_token or os.environ.get("QUIP_ACCESS_TOKEN", "")
                 os.environ["GEMINI_API_KEY"] = gemini_key or os.environ.get("GEMINI_API_KEY", "")
                 if not os.environ.get("GEMINI_API_KEY"):
-                    st.error("请填写 Gemini API Key 或保存默认值")
+                    st.error(_get_text(T, "run_tab.gemini_required") or "请填写 Gemini API Key 或保存默认值")
                 else:
-                    with st.spinner("正在从 Quip 拉取需求并运行四 Agent…"):
+                    with st.spinner(_get_text(T, "run_tab.run_spinner") or "正在从 Quip 拉取需求并运行四 Agent…"):
                         try:
                             demand = load_demand_from_quip(quip_url.strip())
                         except Exception as e:
-                            st.error(f"拉取 Quip 文档失败: {e}")
+                            st.error(f"{_get_text(T, 'run_tab.quip_fetch_fail') or '拉取 Quip 文档失败'}: {e}")
                             demand = None
                         if demand:
                             try:
@@ -131,51 +184,57 @@ def main():
                                     return_details=True,
                                 )
                             except Exception as e:
-                                st.error(f"流水线执行失败: {e}")
+                                st.error(f"{_get_text(T, 'run_tab.pipeline_fail') or '流水线执行失败'}: {e}")
                                 raise
                             if isinstance(out, dict):
                                 st.session_state["last_run"] = out
                                 st.session_state["last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
+                                st.session_state["last_demand_full"] = demand
                             else:
                                 st.session_state["last_run"] = {"result_str": out, "step_outputs": [], "excel_path": None, "quip_url": None, "sheets_url": None, "timestamp": "", "txt_path": ""}
                                 st.session_state["last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
-                            st.success("流水线执行完成")
+                                st.session_state["last_demand_full"] = demand
+                            st.success(_get_text(T, "run_tab.run_success") or "流水线执行完成")
 
         if st.session_state.get("last_run"):
             r = st.session_state["last_run"]
-            st.subheader("Agent 沟通过程")
+            st.subheader(_get_text(T, "run_tab.section_steps") or "Agent 沟通过程")
             step_outputs = r.get("step_outputs") or []
             if step_outputs:
                 for i, step in enumerate(step_outputs, 1):
                     with st.expander(f"步骤 {i}: {step.get('task', '')} — {step.get('agent', '')}", expanded=(i == len(step_outputs))):
                         st.markdown(step.get("content", ""))
             else:
-                st.info("本次未采集到分步输出（可能未使用 stream），下方为最终结果。")
+                st.info(_get_text(T, "run_tab.no_step_output") or "本次未采集到分步输出（可能未使用 stream），下方为最终结果。")
 
-            st.subheader("最终结果")
+            st.subheader(_get_text(T, "run_tab.section_result") or "最终结果")
             st.markdown(r.get("result_str", ""))
 
-            st.subheader("表格链接")
+            st.subheader(_get_text(T, "run_tab.section_links") or "表格链接")
             excel_path = r.get("excel_path")
             quip_link = r.get("quip_url")
             sheets_link = r.get("sheets_url")
             txt_path = r.get("txt_path", "")
             if excel_path and os.path.isfile(excel_path):
                 with open(excel_path, "rb") as f:
-                    st.download_button("下载 Excel", f, file_name=os.path.basename(excel_path), mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                st.caption(f"本地路径: `{excel_path}`")
+                    st.download_button(
+                        _get_text(T, "run_tab.download_excel") or "下载 Excel",
+                        f, file_name=os.path.basename(excel_path),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                st.caption(f"{_get_text(T, 'run_tab.excel_path_label') or '本地路径'}: `{excel_path}`")
             else:
-                st.caption("未生成 Excel 或文件不存在")
+                st.caption(_get_text(T, "run_tab.excel_not_found") or "未生成 Excel 或文件不存在")
             if quip_link:
-                st.markdown(f"**Quip 文档**: [打开链接]({quip_link})")
+                st.markdown(f"**{_get_text(T, 'run_tab.quip_doc_label') or 'Quip 文档'}**: [打开链接]({quip_link})")
             if sheets_link:
-                st.markdown(f"**Google 表格**: [打开链接]({sheets_link})")
+                st.markdown(f"**{_get_text(T, 'run_tab.google_sheets_label') or 'Google 表格'}**: [打开链接]({sheets_link})")
             if txt_path and os.path.isfile(txt_path):
-                st.caption(f"完整结果已保存: `{txt_path}`")
+                st.caption(f"{_get_text(T, 'run_tab.result_saved') or '完整结果已保存'}: `{txt_path}`")
 
     # ---------- 编辑 Agent ----------
     with tab_agents:
-        st.subheader("编辑四 Agent 定义与 Task")
+        st.subheader(_get_text(T, "agents_tab.section_title") or "编辑四 Agent 定义与 Task")
         config = load_agents_config()
         if not config:
             st.warning("未找到 config/agents.yaml 或 PyYAML 未安装；可在此编辑并保存为新配置。")
@@ -216,11 +275,15 @@ def main():
 
     # ---------- 项目记忆 ----------
     with tab_memory:
-        st.subheader("项目记忆（可搜索，供 Agent 保持对项目的熟悉）")
+        st.subheader(_get_text(T, "memory_tab.section_title") or "项目记忆（可搜索，供 Agent 保持对项目的熟悉）")
 
         # 搜索与浏览
-        st.caption("记录文档更新与需求逻辑；支持关键词搜索，按时间倒序展示最新内容。")
-        kw = st.text_input("搜索项目记忆", placeholder="输入关键词检索需求逻辑（如：直播分辨率、禁言、AB test）", key="mem_search")
+        st.caption(_get_text(T, "memory_tab.caption_browse") or "记录文档更新与需求逻辑；支持关键词搜索，按时间倒序展示最新内容。")
+        kw = st.text_input(
+            _get_text(T, "memory_tab.search_label") or "搜索项目记忆",
+            placeholder=_get_text(T, "memory_tab.search_placeholder") or "输入关键词检索需求逻辑（如：直播分辨率、禁言、AB test）",
+            key="mem_search",
+        )
         entries = search(kw, limit=30) if kw and kw.strip() else list_recent(limit=30)
         if entries:
             base = "https://quip.com"
@@ -233,14 +296,22 @@ def main():
                     st.caption(f"来源: {src}")
                     st.markdown(content[:2000] + ("..." if len(content) > 2000 else ""))
         else:
-            st.info("暂无记录。可通过下方「从 Quip 文件夹导入」或「从本次运行更新」添加。")
+            st.info(_get_text(T, "memory_tab.empty_hint") or "暂无记录。可通过下方「从 Quip 文件夹导入」或「从本次运行更新」添加。")
 
         st.divider()
-        st.subheader("导入历史需求")
-        quip_for_import = st.text_input("Quip Token（导入时使用，可与运行流水线共用）", value=defaults["quip_token"], type="password", key="quip_token_import")
+        st.subheader(_get_text(T, "memory_tab.import_section") or "导入历史需求")
+        quip_for_import = st.text_input(
+            _get_text(T, "memory_tab.quip_token_import_label") or "Quip Token（导入时使用，可与运行流水线共用）",
+            value=defaults["quip_token"], type="password", key="quip_token_import",
+        )
 
         # 从 Quip 文件夹批量导入
-        folder_url = st.text_input("Quip 文件夹链接或 folder_id", placeholder="https://quip.com/XXXXX/文件夹名 或 12 字符 folder_id", key="quip_folder")
+        folder_url = st.text_input(
+            _get_text(T, "memory_tab.folder_label") or "Quip 文件夹链接或 folder_id",
+            placeholder=_get_text(T, "memory_tab.folder_placeholder") or "https://quip.com/XXXXX/文件夹名 或 12 字符 folder_id",
+            key="quip_folder",
+        )
+        st.caption(_get_text(T, "memory_tab.filter_hint") or "拉取时会自动过滤测试用例、UI走查、进度汇总等非需求文档，仅导入 PRD。规则见 config/doc_filter.yaml")
         stable = _load_stable_quip_batch()
         with st.expander("分批拉取设置（降低 503 风险）", expanded=False):
             batch_size = st.number_input("每批文档数", min_value=1, max_value=50, value=stable["batch_size"], help="遇 503 会自动降批；上次稳定值已预填")
@@ -273,7 +344,11 @@ def main():
                         progress_bar.progress(1.0)
                         status_text.caption("")
                         _save_stable_quip_batch(stats["stable_batch_size"], stats["stable_batch_pause"])
-                        msg = f"已导入 {len(docs)} 条需求文档，可在上方搜索查看。"
+                        filtered = stats.get("filtered_count", 0)
+                        msg = f"已导入 {len(docs)} 条需求文档"
+                        if filtered > 0:
+                            msg += f"，自动过滤 {filtered} 条非需求文档（测试用例/UI走查/进度汇总等）"
+                        msg += "，可在上方搜索查看。"
                         if stats.get("batch_reduced"):
                             msg += f" 本次遇 503 已自动降批，稳定批次：每批 {stats['stable_batch_size']} 个，已保存供下次使用。"
                         else:
@@ -283,20 +358,31 @@ def main():
                         st.error(f"导入失败: {ex}")
 
         # 从 Quip 单文档导入（补充：若用户只想导入单文档）
-        single_url = st.text_input("或导入单个 Quip 文档", placeholder="https://quip.com/xxx（可选）", key="quip_single")
+        single_url = st.text_input(
+            _get_text(T, "memory_tab.single_label") or "或导入单个 Quip 文档",
+            placeholder=_get_text(T, "memory_tab.single_placeholder") or "https://quip.com/xxx（可选）",
+            key="quip_single",
+        )
         if st.button("从单文档导入"):
             if single_url and single_url.strip():
                 try:
                     content = load_demand_from_quip(single_url.strip())
-                    add_entry("quip_single", content, source_id=single_url.strip(), title="", summary=content[:500])
-                    st.success("已导入，可在上方搜索查看。")
+                    keep, reason = is_product_requirement_doc("", content)
+                    if not keep:
+                        st.warning(f"该文档被识别为非需求文档（{reason}），已跳过导入。若确为需求文档，可在 config/doc_filter.yaml 中调整过滤规则。")
+                    else:
+                        add_entry("quip_single", content, source_id=single_url.strip(), title="", summary=content[:500])
+                        st.success("已导入，可在上方搜索查看。")
                 except Exception as ex:
                     st.error(str(ex))
 
         st.divider()
-        st.subheader("项目记忆摘要（手动编辑，注入 Agent 上下文）")
+        st.subheader(_get_text(T, "memory_tab.memory_summary_section") or "项目记忆摘要（手动编辑，注入 Agent 上下文）")
         mem = load_project_memory()
-        new_mem = st.text_area("项目记忆内容", value=mem, height=200, key="project_memory_text")
+        new_mem = st.text_area(
+            _get_text(T, "memory_tab.memory_text_label") or "项目记忆内容",
+            value=mem, height=200, key="project_memory_text",
+        )
         if st.button("保存项目记忆摘要"):
             os.makedirs(CONFIG_DIR, exist_ok=True)
             with open(PROJECT_MEMORY_PATH, "w", encoding="utf-8") as f:
@@ -313,6 +399,81 @@ def main():
                 st.success("已追加到项目记忆；Agent 下次运行将带上这些上下文。")
             else:
                 st.info("请先运行一次流水线后再点击「从本次运行更新」。")
+
+    # ---------- 与文档 Agent 沟通 ----------
+    with tab_chat:
+        st.subheader(_get_text(T, "chat_tab.section_title") or "与产品文档管理 Agent 沟通")
+        st.caption(_get_text(T, "chat_tab.section_desc") or "验证 Agent 对文档的理解，或就文档内容提问。Agent 基于你选择的文档上下文回答。")
+
+        doc_source = st.radio(
+            _get_text(T, "chat_tab.doc_source_label") or "文档来源",
+            options=["last_run", "memory", "paste"],
+            format_func=lambda x: {
+                "last_run": _get_text(T, "chat_tab.doc_source_last_run") or "上次运行的需求",
+                "memory": _get_text(T, "chat_tab.doc_source_memory") or "项目记忆摘要",
+                "paste": _get_text(T, "chat_tab.doc_source_paste") or "手动粘贴",
+            }[x],
+            key="chat_doc_source",
+        )
+        doc_context = ""
+        if doc_source == "last_run":
+            doc_context = (st.session_state.get("last_demand_full") or st.session_state.get("last_demand_snippet") or "").strip()
+            if not doc_context:
+                st.info(_get_text(T, "chat_tab.doc_source_empty") or "（无）请先在运行流水线跑一次，或选择项目记忆/手动粘贴")
+        elif doc_source == "memory":
+            doc_context = get_project_context_for_agent(include_store=True).strip()
+        else:
+            doc_context = st.text_area(
+                _get_text(T, "chat_tab.paste_placeholder") or "在此粘贴需求文档内容…",
+                height=120,
+                key="chat_paste_doc",
+            ).strip()
+
+        if "doc_chat_messages" not in st.session_state:
+            st.session_state["doc_chat_messages"] = []
+
+        for msg in st.session_state["doc_chat_messages"]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        if doc_context:
+            if st.button(_get_text(T, "chat_tab.quick_summary") or "请总结这份文档的核心要点与潜在风险", key="quick_summary_btn"):
+                user_q = _get_text(T, "chat_tab.quick_summary") or "请总结这份文档的核心要点与潜在风险"
+                st.session_state["doc_chat_messages"].append({"role": "user", "content": user_q})
+                with st.chat_message("assistant"):
+                    with st.spinner(_get_text(T, "chat_tab.thinking") or "文档 Agent 正在思考…"):
+                        try:
+                            os.environ["GEMINI_API_KEY"] = defaults.get("gemini_key") or os.environ.get("GEMINI_API_KEY", "")
+                            reply = chat_with_document_agent(
+                                user_message=user_q,
+                                document_context=doc_context,
+                                project_context=get_project_context_for_agent(include_store=False),
+                            )
+                        except Exception as e:
+                            reply = f"调用失败: {e}"
+                    st.markdown(reply)
+                st.session_state["doc_chat_messages"].append({"role": "assistant", "content": reply})
+                st.rerun()
+
+        user_input = st.chat_input(_get_text(T, "chat_tab.chat_placeholder") or "输入问题…")
+        if user_input and doc_context:
+            st.session_state["doc_chat_messages"].append({"role": "user", "content": user_input})
+            with st.chat_message("assistant"):
+                with st.spinner(_get_text(T, "chat_tab.thinking") or "文档 Agent 正在思考…"):
+                    try:
+                        os.environ["GEMINI_API_KEY"] = defaults.get("gemini_key") or os.environ.get("GEMINI_API_KEY", "")
+                        reply = chat_with_document_agent(
+                            user_message=user_input,
+                            document_context=doc_context,
+                            project_context=get_project_context_for_agent(include_store=False),
+                        )
+                    except Exception as e:
+                        reply = f"调用失败: {e}"
+                st.markdown(reply)
+            st.session_state["doc_chat_messages"].append({"role": "assistant", "content": reply})
+            st.rerun()
+        elif user_input and not doc_context:
+            st.warning(_get_text(T, "chat_tab.doc_source_empty") or "请先选择并加载文档内容。")
 
 
 if __name__ == "__main__":

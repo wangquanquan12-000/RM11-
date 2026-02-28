@@ -43,6 +43,59 @@ OUTPUT_DIR = "output"
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 AGENTS_CONFIG_PATH = os.path.join(CONFIG_DIR, "agents.yaml")
 PROJECT_MEMORY_PATH = os.path.join(CONFIG_DIR, "project_memory.md")
+DOC_FILTER_PATH = os.path.join(CONFIG_DIR, "doc_filter.yaml")
+
+
+def _load_doc_filter_config() -> dict[str, Any]:
+    """加载 doc_filter.yaml，用于拉取时排除非产品需求文档。"""
+    if yaml is None or not os.path.isfile(DOC_FILTER_PATH):
+        return {
+            "exclude_title_patterns": [
+                r"测试用例|^用例$|^TC-|TC\d",
+                r"UI走查|UI 走查|走查清单|走查报告",
+                r"进度汇总|进度周报|周报|日报|月报",
+                r"会议纪要|会议记录",
+                r"bug|缺陷|issue|复盘|评审记录|测试报告",
+            ],
+            "exclude_content_signals": [
+                r"用例ID|用例 id",
+                r"预期结果.*操作步骤|操作步骤.*预期结果",
+                r"走查项|检查项",
+            ],
+        }
+    try:
+        with open(DOC_FILTER_PATH, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return {
+            "exclude_title_patterns": cfg.get("exclude_title_patterns") or [],
+            "exclude_content_signals": cfg.get("exclude_content_signals") or [],
+        }
+    except Exception:
+        return {"exclude_title_patterns": [], "exclude_content_signals": []}
+
+
+def is_product_requirement_doc(title: str, content: str) -> tuple[bool, str]:
+    """判断是否为产品需求文档。返回 (是否保留, 排除原因)。保留则排除原因为空。
+    供单文档导入等处调用。"""
+    cfg = _load_doc_filter_config()
+    title = (title or "").strip()
+    preview = (content or "")[:1500]
+
+    for pat in cfg.get("exclude_title_patterns") or []:
+        try:
+            if re.search(pat, title, re.I):
+                return False, f"标题匹配排除模式: {pat[:30]}…"
+        except re.error:
+            pass
+
+    for pat in cfg.get("exclude_content_signals") or []:
+        try:
+            if re.search(pat, preview):
+                return False, f"内容匹配排除信号: {pat[:30]}…"
+        except re.error:
+            pass
+
+    return True, ""
 
 
 def load_agents_config(path: str | None = None) -> dict[str, Any]:
@@ -258,8 +311,9 @@ def load_demands_from_quip_folder(
     batch_pause: float = 60.0,
     progress_info: dict | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    """从 Quip 文件夹批量导入需求文档。遇 503 自动降批直到不报错，并返回稳定参数供保存。
-    返回 (docs, {"stable_batch_size", "stable_batch_pause", "batch_reduced"})。"""
+    """从 Quip 文件夹批量导入需求文档。遇 503 自动降批直到不报错。
+    自动过滤非产品需求文档（测试用例、UI走查、进度汇总等），仅保留 PRD。
+    返回 (docs, {"stable_batch_size", "stable_batch_pause", "batch_reduced", "filtered_count"})。"""
     base_url = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
     delay = float(os.getenv("QUIP_RATE_LIMIT_DELAY", "1.5"))
     pairs = get_quip_folder_thread_ids(folder_id_or_url)
@@ -267,6 +321,7 @@ def load_demands_from_quip_folder(
     out: list[dict[str, str]] = []
     docs_in_batch = 0
     batch_reduced = False
+    filtered_count = 0
     i = 0
     while i < len(pairs):
         tid, title = pairs[i]
@@ -296,13 +351,19 @@ def load_demands_from_quip_folder(
                         continue
                     raise
             if content and content.strip():
-                out.append({
-                    "thread_id": tid,
-                    "title": title,
-                    "content": content,
-                    "quip_url": f"{base_url}/{tid}",
-                })
-                docs_in_batch += 1
+                keep, reason = is_product_requirement_doc(title or "", content)
+                if keep:
+                    out.append({
+                        "thread_id": tid,
+                        "title": title,
+                        "content": content,
+                        "quip_url": f"{base_url}/{tid}",
+                    })
+                    docs_in_batch += 1
+                else:
+                    filtered_count += 1
+                    if progress_callback:
+                        progress_callback(i, total, f"[过滤] {title or tid} ({reason})")
         except Exception:
             pass
         i += 1
@@ -312,6 +373,7 @@ def load_demands_from_quip_folder(
         "stable_batch_size": batch_size,
         "stable_batch_pause": batch_pause,
         "batch_reduced": batch_reduced,
+        "filtered_count": filtered_count,
     }
 
 
@@ -667,6 +729,83 @@ def _get_crew_with_config(
         temperature=0.4,
     )
     return _build_crew_from_config(agents_config, llm, project_context, stream=stream)
+
+
+def chat_with_document_agent(
+    user_message: str,
+    document_context: str,
+    project_context: str = "",
+    agents_config_path: str | None = None,
+) -> str:
+    """与产品文档管理 Agent（文档分析师）沟通：基于文档内容回答用户问题。
+    用于验证 Agent 对文档的理解，或对文档进行问答。
+    - document_context: 需求文档内容（来自 Quip 拉取、项目记忆或手动粘贴）
+    - project_context: 项目记忆摘要（可选）
+    """
+    if not user_message or not user_message.strip():
+        return "请输入你的问题。"
+    if not document_context or not document_context.strip():
+        return "请先提供文档内容：在「与文档 Agent 沟通」页选择「上次运行的需求」或「项目记忆」，或手动粘贴文档。"
+
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_api_key:
+        raise ValueError("GEMINI_API_KEY 未设置，请先配置。")
+
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    llm = ChatGoogleGenerativeAI(
+        model=model_name,
+        google_api_key=gemini_api_key,
+        temperature=0.3,
+    )
+
+    config = load_agents_config(agents_config_path or AGENTS_CONFIG_PATH)
+    agents_cfg = config.get("agents") or []
+    doubt_cfg = next((a for a in agents_cfg if a.get("id") == "doubt_agent"), None)
+    if not doubt_cfg:
+        doubt_cfg = agents_cfg[0] if agents_cfg else None
+
+    if doubt_cfg:
+        doc_agent = Agent(
+            role=doubt_cfg.get("role", "Document Analyst"),
+            goal=doubt_cfg.get("goal", "理解并分析产品需求文档"),
+            backstory=(doubt_cfg.get("backstory") or "").strip() + "\n\n你现在需要基于文档内容，直接回答用户的问题。回答要准确、简洁、基于文档事实。",
+            llm=llm,
+            verbose=True,
+        )
+    else:
+        doc_agent = Agent(
+            role="Document Analyst",
+            goal="理解产品需求文档并准确回答用户问题",
+            backstory="你是资深需求分析师，熟悉产品文档。根据文档内容回答用户问题，回答要基于文档事实。",
+            llm=llm,
+            verbose=True,
+        )
+
+    proj_ctx = f"\n\n【项目背景】\n{project_context}" if project_context and project_context.strip() else ""
+    doc_preview = document_context[:12000] + ("..." if len(document_context) > 12000 else "")
+
+    task = Task(
+        description="""你是一位产品文档管理专家。用户会向你提问，你需要基于下方提供的【需求文档】内容回答。
+
+要求：
+- 回答必须基于文档事实，不确定时明确说明
+- 若文档中无相关信息，如实告知
+- 回答简洁清晰，可直接用于与产品/研发沟通
+
+【需求文档】
+{doc}
+
+【用户问题】
+{question}
+{project}
+""".replace("{doc}", doc_preview).replace("{question}", user_message.strip()).replace("{project}", proj_ctx),
+        expected_output="基于文档的准确回答",
+        agent=doc_agent,
+    )
+    crew = Crew(agents=[doc_agent], tasks=[task], verbose=True)
+    result = crew.kickoff()
+    out = getattr(result, "raw", result)
+    return str(out).strip() if out else ""
 
 
 def _parse_markdown_tables(text: str) -> list[list[list[str]]]:
