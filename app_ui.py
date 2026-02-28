@@ -26,7 +26,7 @@ from crew_test import (
     run_pipeline,
     update_project_memory,
 )
-from memory_store import add_entry, search, list_recent
+from memory_store import add_entry, delete_entry, search, list_recent
 
 CONFIG_DIR = os.path.dirname(AGENTS_CONFIG_PATH)
 DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
@@ -277,26 +277,37 @@ def main():
     with tab_memory:
         st.subheader(_get_text(T, "memory_tab.section_title") or "项目记忆（可搜索，供 Agent 保持对项目的熟悉）")
 
-        # 搜索与浏览
-        st.caption(_get_text(T, "memory_tab.caption_browse") or "记录文档更新与需求逻辑；支持关键词搜索，按时间倒序展示最新内容。")
+        # 搜索与浏览（仅搜索后显示结果）
+        st.caption(_get_text(T, "memory_tab.caption_browse") or "记录文档更新与需求逻辑；输入关键词搜索后显示匹配文档。")
         kw = st.text_input(
             _get_text(T, "memory_tab.search_label") or "搜索项目记忆",
             placeholder=_get_text(T, "memory_tab.search_placeholder") or "输入关键词检索需求逻辑（如：直播分辨率、禁言、AB test）",
             key="mem_search",
         )
-        entries = search(kw, limit=30) if kw and kw.strip() else list_recent(limit=30)
+        # 仅在有搜索词时展示结果，避免默认展开大量文档
+        entries = []
+        if kw and kw.strip():
+            entries = search(kw, limit=20)
         if entries:
             base = "https://quip.com"
             for e in entries:
                 label = f"【{e.get('source_type', '')}】{e.get('title', '') or e.get('source_id', '')} — {e.get('created_at', '')}"
-                with st.expander(label, expanded=False):
-                    content = e.get("content", "") or e.get("summary", "")
-                    sid = e.get("source_id", "")
-                    src = f"{base}/{sid}" if sid and len(sid) >= 10 else sid
-                    st.caption(f"来源: {src}")
-                    st.markdown(content[:2000] + ("..." if len(content) > 2000 else ""))
+                col_title, col_del = st.columns([1, 0.12])
+                with col_title:
+                    with st.expander(label, expanded=False):
+                        content = e.get("content", "") or e.get("summary", "")
+                        sid = e.get("source_id", "")
+                        src = f"{base}/{sid}" if sid and len(sid) >= 10 else sid
+                        st.caption(f"来源: {src}")
+                        st.markdown(content[:2000] + ("..." if len(content) > 2000 else ""))
+                with col_del:
+                    if st.button("🗑", key=f"del_{e.get('id')}", type="secondary", help="删除此条"):
+                        delete_entry(e.get("id"))
+                        st.rerun()
+        elif kw and kw.strip():
+            st.info(_get_text(T, "memory_tab.search_empty") or "未找到匹配文档。")
         else:
-            st.info(_get_text(T, "memory_tab.empty_hint") or "暂无记录。可通过下方「从 Quip 文件夹导入」或「从本次运行更新」添加。")
+            st.info(_get_text(T, "memory_tab.search_first") or "请输入关键词搜索，或通过下方导入后搜索。")
 
         st.divider()
         st.subheader(_get_text(T, "memory_tab.import_section") or "导入历史需求")

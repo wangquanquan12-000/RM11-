@@ -50,6 +50,8 @@ memory_tab:
   search_label: "搜索项目记忆"
   search_placeholder: "输入关键词检索需求逻辑（如：直播分辨率、禁言、AB test）"
   empty_hint: "暂无记录。可通过下方「从 Quip 文件夹导入」或「从本次运行更新」添加。"
+  search_first: "请输入关键词搜索，或通过下方导入后搜索。"
+  search_empty: "未找到匹配文档。"
   caption_browse: "记录文档更新与需求逻辑；支持关键词搜索，按时间倒序展示最新内容。"
   import_section: "导入历史需求"
   quip_token_import_label: "Quip Token（导入时使用，可与运行流水线共用）"

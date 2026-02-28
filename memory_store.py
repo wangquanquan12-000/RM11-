@@ -99,6 +99,17 @@ def search(keyword: str, limit: int = 50) -> list[dict[str, Any]]:
     return entries[:limit]
 
 
+def delete_entry(entry_id: int) -> bool:
+    """删除指定 id 的记忆条目。返回是否成功。"""
+    conn = _get_conn()
+    _ensure_tables(conn)
+    cur = conn.execute("DELETE FROM memory_entries WHERE id = ?", (entry_id,))
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
+
+
 def list_recent(limit: int = 50) -> list[dict[str, Any]]:
     """按时间倒序列出最近记录"""
     conn = _get_conn()
