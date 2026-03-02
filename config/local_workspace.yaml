@@ -1,0 +1,4 @@
+# 本地文件模式工作目录配置（见 docs/本地文件模式-PRD.md）
+# 需求文档输入、生成用例输出均使用此目录
+workspace_path: "/Users/wangqilong/Desktop/需求文档及测试用例/6.6"
+demand_extensions: [".docx"]

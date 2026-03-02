@@ -152,7 +152,13 @@ def build_agent_knowledge(
 【项目记忆 + 记忆库内容】
 """ + safe_content
 
-    model = (gemini_model or "").strip() or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    try:
+        from crew_test import _resolve_gemini_model
+        model = _resolve_gemini_model(
+            (gemini_model or "").strip() or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        )
+    except ImportError:
+        model = (gemini_model or "").strip() or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
     for attempt in range(3):
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI

@@ -45,6 +45,15 @@ AGENTS_CONFIG_PATH = os.path.join(CONFIG_DIR, "agents.yaml")
 PROJECT_MEMORY_PATH = os.path.join(CONFIG_DIR, "project_memory.md")
 DOC_FILTER_PATH = os.path.join(CONFIG_DIR, "doc_filter.yaml")
 
+# 已弃用模型映射（gemini-1.5-pro / gemini-1.5-flash 已于 2025-04 下架）
+_DEPRECATED_GEMINI_MODEL_MAP = {"gemini-1.5-pro": "gemini-2.5-pro", "gemini-1.5-flash": "gemini-2.0-flash"}
+
+
+def _resolve_gemini_model(model: str) -> str:
+    """将已弃用模型名映射到当前可用模型。"""
+    m = (model or "").strip().lower()
+    return _DEPRECATED_GEMINI_MODEL_MAP.get(m, m or "gemini-2.5-flash-lite")
+
 
 def _load_doc_filter_config() -> dict[str, Any]:
     """加载 doc_filter.yaml，用于拉取时排除非产品需求文档。"""
@@ -424,7 +433,7 @@ def _get_crew(stream: bool = False) -> Crew:
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     if not gemini_api_key:
         raise ValueError("ERROR: GEMINI_API_KEY 未设置，请设置环境变量后重试。")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    model_name = _resolve_gemini_model(os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"))
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=gemini_api_key,
@@ -744,7 +753,7 @@ def _get_crew_with_config(
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     if not gemini_api_key:
         raise ValueError("ERROR: GEMINI_API_KEY 未设置。")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    model_name = _resolve_gemini_model(os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"))
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=gemini_api_key,
@@ -773,7 +782,7 @@ def chat_with_document_agent(
     if not gemini_api_key:
         raise ValueError("GEMINI_API_KEY 未设置，请先配置。")
 
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    model_name = _resolve_gemini_model(os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"))
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=gemini_api_key,
@@ -1076,11 +1085,29 @@ def _export_to_google_sheets(tables: list[list[list[str]]], title: str) -> str |
         return None
 
 
-def _save_result(demand: str, result_str: str, output_dir: str) -> tuple[str, str]:
-    """将需求和结果写入 output_dir，返回 (txt 路径, 时间戳)。"""
+def _sanitize_title_for_filename(title: str) -> str:
+    """将需求标题转为安全文件名字符，非法字符替换为下划线。"""
+    if not title or not str(title).strip():
+        return "需求"
+    s = str(title).strip()[:80]
+    s = re.sub(r'[<>:"/\\|?*]', "_", s)
+    s = re.sub(r"\s+", "_", s)
+    return s or "需求"
+
+
+def _save_result(
+    demand: str,
+    result_str: str,
+    output_dir: str,
+    demand_title: str | None = None,
+) -> tuple[str, str]:
+    """将需求和结果写入 output_dir，返回 (txt 路径, 时间戳)。
+    文件命名按 PRD：测试用例_{需求标题简写}_{timestamp}.txt"""
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(output_dir, f"crew_result_{timestamp}.txt")
+    title_slug = _sanitize_title_for_filename(demand_title or "")
+    base_name = f"测试用例_{title_slug}_{timestamp}"
+    out_path = os.path.join(output_dir, f"{base_name}.txt")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("=== 需求 ===\n\n")
         f.write(demand)
@@ -1178,13 +1205,14 @@ def run_local_crew_pipeline(
     print("=" * 60)
     print(result_str)
     print("=" * 60)
-    out_path, timestamp = _save_result(demand, result_str, output_dir)
+    out_path, timestamp = _save_result(demand, result_str, output_dir, demand_title=None)
     print(f"\n结果已保存: {out_path}")
 
     tables = _parse_markdown_tables(result_str)
     if tables:
         if export_excel:
-            excel_path = os.path.join(output_dir, f"crew_result_{timestamp}.xlsx")
+            title_slug = _sanitize_title_for_filename(None)
+            excel_path = os.path.join(output_dir, f"测试用例_{title_slug}_{timestamp}.xlsx")
             if _export_to_excel(tables, excel_path):
                 print(f"Excel 已导出: {excel_path}")
         if export_quip:
@@ -1287,14 +1315,15 @@ def run_pipeline(
         print("\n" + "=" * 60 + "\n")
         print(result_str)
 
-    out_path, timestamp = _save_result(demand, result_str, output_dir)
+    out_path, timestamp = _save_result(demand, result_str, output_dir, demand_title)
     if not stream:
         print(f"\n结果已保存: {out_path}")
 
     tables = _parse_markdown_tables(result_str)
     if tables:
         if export_excel:
-            excel_path = os.path.join(output_dir, f"crew_result_{timestamp}.xlsx")
+            title_slug = _sanitize_title_for_filename(demand_title or "")
+            excel_path = os.path.join(output_dir, f"测试用例_{title_slug}_{timestamp}.xlsx")
             if _export_to_excel(tables, excel_path):
                 if not stream:
                     print(f"Excel 已导出（可直接下载）: {excel_path}")

@@ -47,8 +47,24 @@ DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
 STABLE_QUIP_BATCH_PATH = os.path.join(CONFIG_DIR, "stable_quip_batch.json")
 MODELS_CONFIG_PATH = os.path.join(CONFIG_DIR, "models.yaml")
 WORKBENCH_APPS_PATH = os.path.join(CONFIG_DIR, "workbench_apps.yaml")
+LOCAL_WORKSPACE_PATH = os.path.join(CONFIG_DIR, "local_workspace.yaml")
 OUTPUT_DIR = "output"
 LAST_RUN_JSON = os.path.join(OUTPUT_DIR, "last_run.json")
+
+
+def _get_output_dir() -> str:
+    """获取输出目录：优先使用 config/local_workspace.yaml 中的 workspace_path，否则用 output/。"""
+    if os.path.isfile(LOCAL_WORKSPACE_PATH):
+        try:
+            import yaml
+            with open(LOCAL_WORKSPACE_PATH, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            wp = (data.get("workspace_path") or "").strip()
+            if wp and os.path.isabs(wp):
+                return wp
+        except Exception:
+            pass
+    return OUTPUT_DIR
 
 MODULE_QUIP_TO_CASES = "quip_to_cases"
 MODULE_AGENTS = "agents"
@@ -179,8 +195,8 @@ def _load_models() -> tuple[list[tuple[str, str]], str]:
     except Exception:
         pass
     return [
-        ("gemini-1.5-flash", "1.5 Flash（免费实验推荐）"),
-        ("gemini-1.5-pro", "1.5 Pro（免费，质量高限额低）"),
+        ("gemini-2.0-flash", "2.0 Flash（原 1.5 Flash 替代，免费实验推荐）"),
+        ("gemini-2.5-pro", "2.5 Pro（原 1.5 Pro 替代，质量高）"),
         ("gemini-2.5-flash-lite", "2.5 Flash-Lite（免费额度较高）"),
         ("gemini-2.5-flash", "2.5 Flash（付费/免费皆可）"),
     ], "gemini-2.5-flash-lite"
@@ -331,6 +347,11 @@ def _load_defaults():
 
     if not out["gemini_model"]:
         out["gemini_model"] = "gemini-2.5-flash-lite"
+    # 兼容已弃用模型：gemini-1.5-pro / gemini-1.5-flash 已于 2025-04 下架，自动映射到可用模型
+    _DEPRECATED_MODEL_MAP = {"gemini-1.5-pro": "gemini-2.5-pro", "gemini-1.5-flash": "gemini-2.0-flash"}
+    m = (out["gemini_model"] or "").strip().lower()
+    if m in _DEPRECATED_MODEL_MAP:
+        out["gemini_model"] = _DEPRECATED_MODEL_MAP[m]
     return out
 
 
@@ -591,7 +612,7 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
                         export_sheets=export_sheets,
                         export_quip_target=(export_quip_target or "").strip() or None,
                         auto_archive=auto_archive,
-                        output_dir=OUTPUT_DIR,
+                        output_dir=_get_output_dir(),
                     )
                 if not result["ok"]:
                     err_msg = result.get("error") or (_get_text(T, "run_tab.pipeline_fail") or "执行失败")
@@ -1281,7 +1302,7 @@ def _render_module_chat(T: dict, defaults: dict):
                 with st.spinner(_get_text(T, "chat_tab.thinking") or "文档 Agent 正在思考…"):
                     try:
                         os.environ["GEMINI_API_KEY"] = defaults.get("gemini_key") or os.environ.get("GEMINI_API_KEY", "")
-                        os.environ["GEMINI_MODEL"] = defaults.get("gemini_model") or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+                        os.environ["GEMINI_MODEL"] = defaults.get("gemini_model") or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
                         reply = chat_with_document_agent(
                             user_message=user_q,
                             document_context=doc_context,
@@ -1300,7 +1321,7 @@ def _render_module_chat(T: dict, defaults: dict):
             with st.spinner(_get_text(T, "chat_tab.thinking") or "文档 Agent 正在思考…"):
                 try:
                     os.environ["GEMINI_API_KEY"] = defaults.get("gemini_key") or os.environ.get("GEMINI_API_KEY", "")
-                    os.environ["GEMINI_MODEL"] = defaults.get("gemini_model") or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+                    os.environ["GEMINI_MODEL"] = defaults.get("gemini_model") or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
                     reply = chat_with_document_agent(
                         user_message=user_input,
                         document_context=doc_context,

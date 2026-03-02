@@ -44,10 +44,13 @@ def run_quip_to_cases(
     output_dir: str,
 ) -> QuipToCasesResult:
     """封装 Quip 拉取 + 四 Agent 流水线 + 可选归档的业务流程，不依赖 Streamlit。"""
-    # 环境变量注入：保持与命令行脚本一致的行为
+    # 环境变量注入：保持与命令行脚本一致的行为；兼容已弃用模型名
+    from crew_test import _resolve_gemini_model
     os.environ["QUIP_ACCESS_TOKEN"] = quip_token or os.environ.get("QUIP_ACCESS_TOKEN", "")
     os.environ["GEMINI_API_KEY"] = gemini_key or os.environ.get("GEMINI_API_KEY", "")
-    os.environ["GEMINI_MODEL"] = gemini_model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    os.environ["GEMINI_MODEL"] = _resolve_gemini_model(
+        gemini_model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    )
 
     if not os.environ.get("GEMINI_API_KEY"):
         return {

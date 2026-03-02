@@ -19,14 +19,16 @@ def generate_risk_assessment_report(
     if not (document_content or "").strip():
         raise ValueError("文档内容为空")
 
-    from crew_test import desensitize_for_llm
+    from crew_test import _resolve_gemini_model, desensitize_for_llm
     from langchain_google_genai import ChatGoogleGenerativeAI
 
     key = (gemini_key or "").strip() or os.environ.get("GEMINI_API_KEY")
     if not key:
         raise ValueError("请先配置 GEMINI_API_KEY")
 
-    model = (gemini_model or "").strip() or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    model = _resolve_gemini_model(
+        (gemini_model or "").strip() or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    )
     llm = ChatGoogleGenerativeAI(model=model, google_api_key=key, temperature=0.3)
 
     # 入参脱敏：传给大模型前对文档内容做掩码处理
