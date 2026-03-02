@@ -838,6 +838,15 @@ def _render_paste_mode(T: dict, defaults: dict):
         key="run_paste_xlsx",
         help="可选；上传后作为 Agent 上下文",
     )
+
+    # 用户主动清空时才重置缓存，满足 F6-2 约束
+    if st.button("清空文本与附件", key="run_paste_reset"):
+        st.session_state["run_paste_content"] = ""
+        st.session_state["run_paste_xlsx"] = None
+        st.session_state[_paste_result_key] = None
+        st.session_state[_paste_error_key] = None
+        st.rerun()
+
     existing_cases = ""
     if xlsx_uploaded:
         try:
@@ -976,6 +985,16 @@ def _render_upload_mode(T: dict, defaults: dict):
         help="支持 .md、.docx（Word）、.xlsx，可混合选择；单文件 &lt; 10MB，总 &lt; 50MB",
     )
 
+    # 用户主动清空时才重置缓存，满足 F6-2 约束
+    _upload_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "upload_running")
+    _upload_result_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "upload_last_run")
+    _upload_error_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "upload_last_error")
+    if st.button("清空已选文件", key="run_upload_reset"):
+        st.session_state["run_upload_files"] = None
+        st.session_state[_upload_result_key] = None
+        st.session_state[_upload_error_key] = None
+        st.rerun()
+
     demand_md = ""
     existing_cases = ""
     preview_infos = []
@@ -1009,10 +1028,6 @@ def _render_upload_mode(T: dict, defaults: dict):
             key="run_upload_model",
         )
     st.caption("仅支持 Excel 下载，不配置导出路径。")
-
-    _upload_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "upload_running")
-    _upload_result_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "upload_last_run")
-    _upload_error_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "upload_last_error")
 
     pipeline_running = st.session_state.get(_upload_key, False)
     run_label = "运行中…" if pipeline_running else "开始生成"
