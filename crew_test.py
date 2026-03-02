@@ -1090,25 +1090,65 @@ def _extract_table_candidates(text: str) -> list[str]:
     normalized = text.replace("｜", "|")
     # 1. 全文作为候选
     candidates.append(normalized)
-    # 2. 提取 ```...``` 或 ```markdown...``` 块内容
-    for m in re.finditer(r"```(?:markdown|md)?\s*\n([\s\S]*?)```", normalized, re.IGNORECASE):
+    # 2. 提取 ```...``` 或 ```markdown|md|text...``` 块内容
+    for m in re.finditer(r"```(?:markdown|md|text)?\s*\n([\s\S]*?)```", normalized, re.IGNORECASE):
         block = (m.group(1) or "").strip()
         if block and block.count("|") >= 2:
             candidates.append(block)
     return candidates
 
 
+def _extract_table_rows_relaxed(text: str) -> list[list[str]]:
+    """宽松提取：收集所有含 2 个以上 | 的连续行，组成表格。用于主解析失败时的兜底。"""
+    lines = text.replace("｜", "|").split("\n")
+    rows: list[list[str]] = []
+    current_block: list[list[str]] = []
+    for raw in lines:
+        line = raw.strip()
+        norm = _normalize_table_line(line) or line
+        if norm and norm.count("|") >= 2:
+            if not norm.startswith("|"):
+                norm = "| " + norm
+            if not norm.endswith("|"):
+                norm = norm + " |"
+            parts = norm.split("|")
+            cells = [c.strip() for c in parts[1:-1] if c is not None]
+            if cells and not all(re.match(r"^[\s\-:]+$", c) for c in cells):
+                current_block.append(cells)
+        else:
+            if len(current_block) >= 2:
+                rows = current_block
+                break
+            current_block = []
+    if not rows and current_block and len(current_block) >= 2:
+        rows = current_block
+    return rows
+
+
+def _normalize_table_column_count(rows: list[list[str]], max_cols: int = 12) -> list[list[str]]:
+    """列数归一：按最大列数补齐空单元格，避免列数不一致导致导出异常。"""
+    if not rows:
+        return rows
+    n = max(len(r) for r in rows)
+    n = min(n, max_cols)
+    return [(r + [""] * (n - len(r)))[:n] for r in rows]
+
+
 def _parse_markdown_tables(text: str) -> list[list[list[str]]]:
     """从文本中解析所有 Markdown 表格，返回 [表格1行列表, 表格2行列表, ...]，每表为 [row1, row2, ...]，每行为 [cell, ...]。
-    支持稍宽松的表格格式（如缺少首尾 |、``` 代码块包裹），以兼容 LLM 输出差异。"""
-    # 兼容全角竖线等常见变体
+    支持稍宽松的表格格式（如缺少首尾 |、``` 代码块包裹），以兼容 LLM 输出差异。
+    主解析失败时尝试宽松兜底提取。"""
     normalized_text = text.replace("｜", "|")
-    # 尝试多个候选块（含代码块内内容），任一块解析成功即返回
     candidates = _extract_table_candidates(normalized_text)
     for candidate in candidates:
         tables = _parse_markdown_tables_inner(candidate)
         if tables:
-            return tables
+            return [_normalize_table_column_count(t) for t in tables]
+    # 兜底：宽松行提取
+    relaxed_rows = _extract_table_rows_relaxed(normalized_text)
+    if relaxed_rows:
+        normalized_rows = _normalize_table_column_count(relaxed_rows)
+        return [normalized_rows]
     return []
 
 

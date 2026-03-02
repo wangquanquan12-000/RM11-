@@ -35,13 +35,55 @@ def _debug_save_parse_fail(raw_content: str) -> None:
         pass
 
 
-def _log_parse_fail(
-    step_outputs: list[dict],
+TABLE_REPAIR_PROMPT = """以下内容应为测试用例的 Markdown 表格，但可能存在格式错误。请将其修正为合法的 Markdown 表格并直接输出，不要任何说明、问候或前后文字。
+
+格式要求：
+- 每行必须以 | 开头、以 | 结尾
+- 表头固定为：| 序号 | 用例编号 | 主模块 | 子场景 | 用例概述 | 优先级 | 前置条件 | 测试步骤 | 预期结果 |
+- 第二行应为分隔行：| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+- 之后为数据行
+
+原始内容：
+"""
+
+
+def _repair_markdown_table_via_llm(
+    raw_text: str,
+    gemini_key: str,
+    gemini_model: str,
+) -> str:
+    """解析失败时，调用 LLM 尝试修正 Markdown 表格格式。返回修正后的文本，失败返回空串。"""
+    if not raw_text or not (gemini_key or "").strip():
+        return ""
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        os.environ["GEMINI_API_KEY"] = gemini_key or os.environ.get("GEMINI_API_KEY", "")
+        model = gemini_model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        if not os.environ.get("GEMINI_API_KEY"):
+            return ""
+        llm = ChatGoogleGenerativeAI(
+            model=model,
+            google_api_key=gemini_key,
+            temperature=0.1,
+        )
+        prompt = TABLE_REPAIR_PROMPT + (raw_text or "")[:6000]
+        resp = llm.invoke(prompt)
+        out = (getattr(resp, "content", None) or str(resp) or "").strip()
+        return out if out else ""
+    except Exception:
+        return ""
+
+
+def _log_pipeline_result(
+    tables_count: int,
+    has_excel: bool,
     cases_md_len: int,
     result_str_len: int,
-    raw_preview: str,
+    step_outputs: list[dict],
+    raw_for_debug: str,
 ) -> None:
-    """解析失败时写入结构化日志到 output/parse_fail_log.txt，便于排查。"""
+    """每次流水线结束写入日志；解析失败时额外保存原始内容。便于排查「未生成日志」或「未解析到表格」问题。"""
     try:
         base = os.path.dirname(os.path.abspath(__file__))
         out_dir = os.path.join(base, "output")
@@ -54,17 +96,25 @@ def _log_parse_fail(
             if s.get("task") == "task3":
                 task3_len = len(str(s.get("content", "")))
                 break
+        status = "解析成功" if tables_count else "解析失败"
+        raw_preview = repr((raw_for_debug or "")[:200])
         lines = [
-            f"[{ts}] 表格解析失败",
+            f"[{ts}] {status} | tables={tables_count} excel={has_excel}",
+            f"  日志路径: {os.path.abspath(log_path)}",
             f"  step_outputs: {task_ids}",
-            f"  cases_md_len={cases_md_len} task3_content_len={task3_len} result_str_len={result_str_len}",
-            f"  raw_preview: {repr(raw_preview[:300])}",
+            f"  cases_md_len={cases_md_len} task3_len={task3_len} result_str_len={result_str_len}",
+            f"  raw_preview: {raw_preview}",
             "",
         ]
         with open(log_path, "a", encoding="utf-8") as f:
             f.write("\n".join(lines))
-    except Exception:
-        pass
+        # 解析失败时额外保存完整原始内容
+        if tables_count == 0 and raw_for_debug:
+            _debug_save_parse_fail(raw_for_debug)
+    except Exception as e:
+        # 写入失败时至少输出到 stderr，便于在终端/系统日志中看到
+        import sys
+        print(f"[pipeline] 日志写入失败: {e}", file=sys.stderr)
 from memory_store import (
     TEST_CASES_SOURCE_TYPE,
     add_entry,
@@ -321,13 +371,30 @@ def run_upload_to_cases(
     if not tables and result_str:
         tables = _parse_markdown_tables(result_str)
 
-    # 解析失败时：保存原始内容 + 写入日志
-    if not tables and (cases_md or result_str):
-        raw = cases_md or result_str
-        _debug_save_parse_fail(raw)
-        _log_parse_fail(step_outputs=out.get("step_outputs") or [], cases_md_len=len(cases_md or ""), result_str_len=len(result_str or ""), raw_preview=(raw or "")[:500])
+    # 解析失败时：LLM 修表兜底
+    raw_for_repair = cases_md or result_str
+    if not tables and raw_for_repair and gemini_key:
+        repaired = _repair_markdown_table_via_llm(
+            raw_for_repair,
+            gemini_key=gemini_key,
+            gemini_model=gemini_model or "",
+        )
+        if repaired:
+            tables = _parse_markdown_tables(repaired)
+            if tables:
+                cases_md = repaired
 
     excel_bytes = export_tables_to_excel_bytes(tables) if tables else None
+
+    # 解析失败或需排查时：保存原始内容 + 写入日志（放宽条件，覆盖 cases_md/result_str 全空等情况）
+    _log_pipeline_result(
+        tables_count=len(tables) if tables else 0,
+        has_excel=excel_bytes is not None,
+        cases_md_len=len(cases_md or ""),
+        result_str_len=len(result_str or ""),
+        step_outputs=out.get("step_outputs") or [],
+        raw_for_debug=cases_md or result_str,
+    )
 
     return {
         "ok": True,
