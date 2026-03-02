@@ -56,17 +56,40 @@ LAST_RUN_JSON = os.path.join(OUTPUT_DIR, "last_run.json")
 
 def _get_output_dir() -> str:
     """获取输出目录：优先使用 config/local_workspace.yaml 中的 workspace_path，否则用 output/。"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    default_dir = os.path.join(base_dir, OUTPUT_DIR)
+
+    candidate = None
     if os.path.isfile(LOCAL_WORKSPACE_PATH):
         try:
             import yaml
             with open(LOCAL_WORKSPACE_PATH, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             wp = (data.get("workspace_path") or "").strip()
-            if wp and os.path.isabs(wp):
-                return wp
+            if wp:
+                if os.path.isabs(wp):
+                    candidate = os.path.abspath(wp)
+                else:
+                    candidate = os.path.abspath(os.path.join(base_dir, wp))
         except Exception:
+            candidate = None
+
+    # 防御目录遍历：仅允许项目根目录内的子目录作为工作区
+    if candidate:
+        try:
+            if os.path.commonpath([base_dir, candidate]) == base_dir:
+                os.makedirs(candidate, exist_ok=True)
+                return candidate
+        except Exception:
+            # 若目录不可用或创建失败，回退到默认 output 目录
             pass
-    return OUTPUT_DIR
+
+    try:
+        os.makedirs(default_dir, exist_ok=True)
+        return default_dir
+    except Exception:
+        # 最保守的兜底：回退到相对路径 output/，避免因权限问题导致流程完全中断
+        return OUTPUT_DIR
 
 MODULE_QUIP_TO_CASES = "quip_to_cases"
 MODULE_AGENTS = "agents"
@@ -553,24 +576,38 @@ def _render_main_app(T: dict, cookies=None):
 
 
 def _render_module_quip_to_cases(T: dict, defaults: dict):
-    """工作台模块：Quip 或文件上传 → 四 Agent → 测试用例。
-    支持两种输入：Quip 链接（含导出 Quip/Sheets）、文件上传（仅 Excel 下载）。"""
-    st.caption(_get_text(T, "run_tab.page_caption") or "从 Quip 需求文档生成测试用例，支持导出 Excel / Quip / Google 表格。")
+    """工作台模块：上传 / 粘贴 / Quip → 四 Agent → 测试用例。
+    主入口为上传与粘贴，Quip 作为高级来源。"""
+    st.caption(_get_text(T, "run_tab.page_caption") or "从需求文档生成测试用例，支持上传、粘贴或 Quip 链接。")
     st.markdown("<div style='margin-bottom:0.5rem'></div>", unsafe_allow_html=True)
 
     demand_source = st.radio(
         "需求来源",
-        options=["quip", "upload"],
-        format_func=lambda x: "Quip 链接" if x == "quip" else "文件上传（.md + .xlsx）",
+        options=["upload", "paste", "quip"],
+        format_func=lambda x: {
+            "upload": _get_text(T, "run_tab.demand_source_upload") or "上传文件",
+            "paste": _get_text(T, "run_tab.demand_source_paste") or "粘贴文本",
+            "quip": _get_text(T, "run_tab.demand_source_quip") or "Quip 链接（高级）",
+        }.get(x, x),
         key="run_demand_source",
         horizontal=True,
     )
 
+    # F5-2 配置状态提示
+    _has_key = bool(defaults.get("gemini_key"))
+    _config_status = (_get_text(T, "run_tab.config_status_ok") or "Token/Key 已配置") if _has_key else (_get_text(T, "run_tab.config_status_missing") or "请在「设置」中配置 Token 与 Gemini API Key")
+    st.caption(f"📌 {_config_status}")
+
     if demand_source == "upload":
         _render_upload_mode(T, defaults)
+        _render_run_history(T)
+        return
+    if demand_source == "paste":
+        _render_paste_mode(T, defaults)
+        _render_run_history(T)
         return
 
-    # ─── Quip 模式 ───
+    # ─── Quip 模式（高级来源） ───
     # ① 需求输入
     st.markdown(f'<p class="step-label">{_get_text(T, "run_tab.step_1") or "① 需求输入"}</p>', unsafe_allow_html=True)
     quip_url = st.text_input(
@@ -664,6 +701,19 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
                     st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = _r
                     if _r:
                         _save_last_run(_r)
+                        try:
+                            from run_history import add_run_record
+                            add_run_record(
+                                source_type="Quip",
+                                demand_title=_r.get("demand_title") or "Quip 文档",
+                                result_str=_r.get("result_str", ""),
+                                excel_path=_r.get("excel_path"),
+                                txt_path=_r.get("txt_path"),
+                                quip_url=_r.get("quip_url"),
+                                sheets_url=_r.get("sheets_url"),
+                            )
+                        except Exception:
+                            pass
                     st.session_state["app_last_demand_snippet"] = result.get("demand_snippet", "")
                     st.session_state["app_last_demand_full"] = result.get("demand_full", "")
                     archive_warning = result.get("archive_warning", "")
@@ -677,12 +727,6 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
                 _progress_placeholder.empty()
                 st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = False
 
-    r = st.session_state.get("app_last_run") or st.session_state.get(_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run"))
-    if not r:
-        r = _load_last_run()
-        if r:
-            st.session_state["app_last_run"] = r
-            st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = r
     _last_error = st.session_state.get(_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error"))
     if _last_error and not st.session_state.get(_get_module_state_key(MODULE_QUIP_TO_CASES, "running"), False):
         st.markdown("""
@@ -694,60 +738,229 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
         if st.button(_get_text(T, "run_tab.retry_btn") or "重试", key="run_retry_btn"):
             st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = None
             st.rerun()
-    if not r:
-        st.info(_get_text(T, "app.empty_state_hint") or "暂无生成记录，输入链接开始第一次")
-    if r:
-        st.subheader(_get_text(T, "run_tab.section_links") or "最近生成")
-        excel_path = r.get("excel_path")
-        quip_link = r.get("quip_url")
-        sheets_link = r.get("sheets_url")
-        txt_path = r.get("txt_path", "")
-        demand_title = (r.get("demand_title", "") or "最近生成").replace("<", "&lt;").replace(">", "&gt;")
-        _path_info = excel_path if (excel_path and os.path.isfile(excel_path)) else (_get_text(T, "run_tab.excel_not_found") or "未生成 Excel")
-        _path_info = _path_info.replace("<", "&lt;").replace(">", "&gt;")
-        _txt_safe = txt_path.replace("<", "&lt;").replace(">", "&gt;") if txt_path else ""
-        _txt_line = f'<p style="margin:0.25rem 0 0; font-size:0.9rem; color:#64748b;">{_get_text(T, "run_tab.result_saved") or "完整结果已保存"}: {_txt_safe}</p>' if (txt_path and os.path.isfile(txt_path)) else ""
-        st.markdown(f"""
-        <div class="card-style">
-            <p style="margin:0 0 0.25rem 0; font-weight: 500;">{demand_title}</p>
-            <p style="margin:0; font-size:0.9rem; color:#64748b;">{_get_text(T, "run_tab.excel_path_label") or "本地路径"}: {_path_info}</p>
-            {_txt_line}
-        </div>
-        """, unsafe_allow_html=True)
-        link_cols = st.columns([1, 1, 1])
-        with link_cols[0]:
-            if excel_path and os.path.isfile(excel_path):
-                with open(excel_path, "rb") as f:
-                    st.download_button(
-                        _get_text(T, "run_tab.download_excel") or "📥 下载 Excel",
-                        f, file_name=os.path.basename(excel_path),
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_excel",
-                    )
-            else:
-                st.caption(_get_text(T, "run_tab.excel_not_found") or "未生成 Excel")
-        with link_cols[1]:
-            if quip_link:
-                st.markdown(f"[{_get_text(T, 'run_tab.quip_doc_label') or '打开 Quip 文档'}]({quip_link})")
-        with link_cols[2]:
-            if sheets_link:
-                st.markdown(f"[{_get_text(T, 'run_tab.google_sheets_label') or '打开 Google 表格'}]({sheets_link})")
 
-        step_outputs = r.get("step_outputs") or []
+    _render_run_history(T)
+
+
+def _render_run_history(T: dict) -> None:
+    """历史记录：按关键字过滤、卡片列表、删除（二次确认）、下载 Excel。F4 + F5-3"""
+    st.divider()
+    st.subheader(_get_text(T, "run_tab.history_section") or "历史记录")
+
+    _delete_confirm_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "delete_confirm_id")
+    keyword = st.text_input(
+        "搜索",
+        key="run_history_filter",
+        placeholder=_get_text(T, "run_tab.history_filter_placeholder") or "按标题或来源类型搜索…",
+        label_visibility="collapsed",
+    )
+    keyword = (keyword or "").strip()
+
+    try:
+        from run_history import list_run_records, delete_run_record, get_full_result, get_excel_filename
+    except ImportError:
+        st.caption("历史记录模块未就绪")
+        return
+
+    records = list_run_records(keyword=keyword or "", limit=20)
+    if not records:
+        st.info(_get_text(T, "run_tab.history_empty_state") or "暂无生成记录，上传或粘贴需求后开始生成")
+        return
+
+    for rec in records:
+        stype = rec.get("source_type") or ""
+        title = (rec.get("demand_title") or "")[:50]
+        ts = rec.get("timestamp", "")
+        card_title = f"{stype} · {title}"
+        rid = rec.get("id", "")
+
+        with st.container():
+            cols = st.columns([4, 1])
+            with cols[0]:
+                st.markdown(f"**{card_title}**  ·  {ts}")
+            with cols[1]:
+                if st.button("🗑️", key=f"run_del_{rid}", help=_get_text(T, "run_tab.delete_btn") or "删除"):
+                    st.session_state[_delete_confirm_key] = rid
+                    st.rerun()
+
+        if st.session_state.get(_delete_confirm_key) == rid:
+            st.warning(_get_text(T, "run_tab.delete_confirm_msg") or "确定要删除这条历史记录吗？")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("确认删除", key=f"run_del_ok_{rid}"):
+                    delete_run_record(rid)
+                    st.session_state[_delete_confirm_key] = None
+                    st.rerun()
+            with c2:
+                if st.button("取消", key=f"run_del_cancel_{rid}"):
+                    st.session_state[_delete_confirm_key] = None
+                    st.rerun()
+            st.divider()
+            continue
+
+        ex_path = rec.get("excel_path") or ""
+        if ex_path and os.path.isfile(ex_path):
+            fn = get_excel_filename(rec)
+            with open(ex_path, "rb") as f:
+                st.download_button(
+                    _get_text(T, "run_tab.download_excel") or "📥 下载 Excel",
+                    data=f.read(),
+                    file_name=fn,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"run_dl_{rid}",
+                )
+        else:
+            st.caption(_get_text(T, "run_tab.no_excel_hint") or "本次无可下载表格")
+
+        with st.expander("查看详情", expanded=False, key=f"run_exp_{rid}"):
+            full_text = get_full_result(rec, extra_allowed_dirs=[_get_output_dir()])
+            st.markdown(full_text or "*（无）*")
+
+        st.divider()
+
+
+def _render_paste_mode(T: dict, defaults: dict):
+    """粘贴文本模式：大文本框粘贴 PRD，可选 .xlsx 既有用例，跑四 Agent。"""
+    st.caption(_get_text(T, "run_tab.paste_xlsx_hint") or "可同时上传 .xlsx 作为既有用例上下文（可选）")
+
+    pasted = st.text_area(
+        "PRD 内容",
+        height=220,
+        key="run_paste_content",
+        placeholder=_get_text(T, "run_tab.paste_placeholder") or "在此粘贴 PRD 或需求文档内容…",
+        label_visibility="collapsed",
+    ).strip()
+
+    xlsx_uploaded = st.file_uploader(
+        "可选：上传 .xlsx 既有用例",
+        type=["xlsx"],
+        accept_multiple_files=False,
+        key="run_paste_xlsx",
+        help="可选；上传后作为 Agent 上下文",
+    )
+    existing_cases = ""
+    if xlsx_uploaded:
         try:
-            from app_ui_components import render_log_terminal
-            render_log_terminal(step_outputs, title=_get_text(T, "run_tab.section_steps") or "查看 Agent 沟通过程", key="run_log")
-        except ImportError:
-            with st.expander(_get_text(T, "run_tab.section_steps") or "查看 Agent 沟通过程", expanded=False):
-                if step_outputs:
-                    for i, step in enumerate(step_outputs, 1):
-                        with st.expander(f"步骤 {i}: {step.get('task', '')} — {step.get('agent', '')}", expanded=False):
-                            st.markdown(step.get("content", ""))
-                else:
-                    st.info(_get_text(T, "run_tab.no_step_output") or "本次未采集到分步输出。")
+            _, existing_cases, _ = parse_uploaded_files([xlsx_uploaded])
+        except Exception:
+            pass
 
-        with st.expander(_get_text(T, "run_tab.section_result") or "查看最终结果全文", expanded=False):
-            st.markdown(r.get("result_str", ""))
+    gemini_models_list, default_model = _load_models()
+    _model_opts = [m[0] for m in gemini_models_list]
+    _model_idx = next((i for i, (k, _) in enumerate(gemini_models_list) if k == (defaults.get("gemini_model") or default_model)), 0)
+    with st.expander("模型配置", expanded=not bool(defaults.get("gemini_key"))):
+        gemini_model = st.selectbox(
+            "Gemini 模型",
+            options=_model_opts,
+            index=_model_idx,
+            format_func=lambda x: dict(gemini_models_list).get(x, x),
+            key="run_paste_model",
+        )
+
+    _paste_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "paste_running")
+    _paste_result_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "paste_last_run")
+    _paste_error_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "paste_last_error")
+
+    pipeline_running = st.session_state.get(_paste_key, False)
+    run_label = "运行中…" if pipeline_running else "开始生成"
+    if st.button(run_label, type="primary", use_container_width=True, key="run_paste_btn", disabled=pipeline_running):
+        if not pasted:
+            st.error("请粘贴需求文档内容")
+        elif not defaults.get("gemini_key"):
+            st.error("请先在「设置」中配置 Gemini API Key")
+        else:
+            st.session_state[_paste_error_key] = None
+            st.session_state[_paste_key] = True
+            _ph = st.empty()
+            try:
+                with _ph.container():
+                    st.progress(0.3, text="分析文档并生成用例…")
+                with st.spinner("正在生成…"):
+                    result = run_upload_to_cases(
+                        demand_md=pasted,
+                        existing_cases=existing_cases,
+                        gemini_key=defaults.get("gemini_key", ""),
+                        gemini_model=gemini_model,
+                        project_context=get_project_context_for_agent(),
+                    )
+                if not result["ok"]:
+                    st.session_state[_paste_error_key] = result.get("error", "执行失败")
+                    st.error(result.get("error", "执行失败"))
+                else:
+                    st.session_state[_paste_result_key] = result
+                    st.session_state[_paste_error_key] = None
+                    _ph.progress(1.0, text="完成")
+                    st.success("生成完成")
+                    # 标题：首行或前 20 字
+                    _lines = pasted.splitlines()
+                    _first = (_lines[0] if _lines else "").strip()
+                    _demand_title = (_first[:20] + "…") if len(_first) > 20 else (_first or "粘贴需求")
+                    _result_str = f"## 1. 理解内容\n\n{result.get('understanding', '')}\n\n## 2. 问题点\n\n{result.get('issues', '')}\n\n## 3. 新用例表\n\n{result.get('cases_md', '')}"
+                    _ex_path = None
+                    _txt_path = None
+                    try:
+                        from run_history import add_run_record, slug_for_filename
+                        from datetime import datetime
+                        _out = _get_output_dir()
+                        _rid = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        _slug = slug_for_filename(_demand_title, 20)
+                        if result.get("excel_bytes"):
+                            _ex_path = os.path.join(_out, f"测试用例_{_slug}_{_rid}.xlsx")
+                            os.makedirs(_out, exist_ok=True)
+                            with open(_ex_path, "wb") as f:
+                                f.write(result["excel_bytes"])
+                        _txt_path = os.path.join(_out, f"run_{_rid}.txt")
+                        with open(_txt_path, "w", encoding="utf-8") as f:
+                            f.write(_result_str)
+                        add_run_record(
+                            source_type="粘贴",
+                            demand_title=_demand_title,
+                            result_str=_result_str,
+                            excel_path=_ex_path,
+                            txt_path=_txt_path,
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                st.session_state[_paste_error_key] = str(e)
+                st.error(str(e))
+            finally:
+                _ph.empty()
+                st.session_state[_paste_key] = False
+
+    _last_err = st.session_state.get(_paste_error_key)
+    if _last_err and not pipeline_running:
+        st.error(_last_err)
+        if st.button("重试", key="run_paste_retry"):
+            st.session_state[_paste_error_key] = None
+            st.rerun()
+
+    r = st.session_state.get(_paste_result_key)
+    if not r:
+        st.info("粘贴需求内容后点击「开始生成」。结果将分为：理解内容、问题点、新用例表；支持下载 Excel。")
+        return
+
+    st.divider()
+    st.subheader("1. 理解内容")
+    st.markdown(r.get("understanding", "") or "*（无）*")
+
+    st.subheader("2. 问题点")
+    st.markdown(r.get("issues", "") or "*（无）*")
+
+    st.subheader("3. 新测试用例表")
+    st.markdown(r.get("cases_md", "") or "*（无）*")
+
+    excel_bytes = r.get("excel_bytes")
+    if excel_bytes:
+        st.download_button(
+            "📥 下载 Excel",
+            data=excel_bytes,
+            file_name="测试用例.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_paste_excel",
+        )
+    else:
+        st.caption("未解析到 Markdown 表格，无法导出 Excel。")
 
 
 def _render_upload_mode(T: dict, defaults: dict):
@@ -831,6 +1044,38 @@ def _render_upload_mode(T: dict, defaults: dict):
                     st.session_state[_upload_error_key] = None
                     _ph.progress(1.0, text="完成")
                     st.success("生成完成")
+                    # 写入历史
+                    _demand_title = "上传需求"
+                    for p in preview_infos:
+                        if p.get("type") in ("md", "docx"):
+                            _demand_title = os.path.splitext(p.get("name", ""))[0] or _demand_title
+                            break
+                    _result_str = f"## 1. 理解内容\n\n{result.get('understanding', '')}\n\n## 2. 问题点\n\n{result.get('issues', '')}\n\n## 3. 新用例表\n\n{result.get('cases_md', '')}"
+                    _ex_path = None
+                    _txt_path = None
+                    try:
+                        from run_history import add_run_record, slug_for_filename
+                        from datetime import datetime
+                        _out = _get_output_dir()
+                        _rid = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        _slug = slug_for_filename(_demand_title, 20)
+                        if result.get("excel_bytes"):
+                            _ex_path = os.path.join(_out, f"测试用例_{_slug}_{_rid}.xlsx")
+                            os.makedirs(_out, exist_ok=True)
+                            with open(_ex_path, "wb") as f:
+                                f.write(result["excel_bytes"])
+                        _txt_path = os.path.join(_out, f"run_{_rid}.txt")
+                        with open(_txt_path, "w", encoding="utf-8") as f:
+                            f.write(_result_str)
+                        add_run_record(
+                            source_type="上传",
+                            demand_title=_demand_title,
+                            result_str=_result_str,
+                            excel_path=_ex_path,
+                            txt_path=_txt_path,
+                        )
+                    except Exception:
+                        pass
             except Exception as e:
                 st.session_state[_upload_error_key] = str(e)
                 st.error(str(e))
