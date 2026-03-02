@@ -1,0 +1,31 @@
+# 工作台模块列表；Tab/导航由此处驱动，新增模块只改配置并注册渲染函数
+# id: 模块唯一标识，与 session_state 前缀 app_<id>_* 对应
+# label_key: 文案 key，在 ui_texts.yaml workbench 下；无则用 label 兜底
+# order: 排序，数字小靠前
+# enabled: 是否展示
+apps:
+  - id: quip_to_cases
+    label_key: tabs.run
+    label: "生成用例"
+    order: 1
+    enabled: true
+  - id: agents
+    label_key: tabs.agents
+    label: "编辑 Agent"
+    order: 2
+    enabled: true
+  - id: memory
+    label_key: tabs.memory
+    label: "项目记忆"
+    order: 3
+    enabled: true
+  - id: chat
+    label_key: tabs.chat
+    label: "文档问答"
+    order: 4
+    enabled: true
+  - id: settings
+    label_key: app.settings
+    label: "设置"
+    order: 5
+    enabled: true

@@ -20,8 +20,12 @@ auth:
   logged_in_as: "当前用户"
 
 app:
-  title: "需求 → 测试用例"
-  page_title: "需求 → 测试用例"
+  title: "用例工坊 · AI 测试协作平台"
+  page_title: "用例工坊 · AI 测试协作平台"
+  slogan: "需求即输入，用例即输出，AI 全程协同一键生成"
+  settings: "设置"
+  empty_state_hint: "暂无生成记录，输入链接开始第一次"
+  try_example: "试试示例"
 
 tabs:
   run: "生成用例"

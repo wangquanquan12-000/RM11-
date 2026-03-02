@@ -4,5 +4,5 @@ openpyxl
 streamlit>=1.28.0
 PyYAML
 keyring>=24.0.0
-streamlit-cookies-manager>=0.2.0
+streamlit-cookies-manager-v2>=0.3.1
 pytest>=7.0.0
