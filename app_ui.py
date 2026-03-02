@@ -27,6 +27,7 @@ from crew_test import (
     load_demands_from_quip_folder,
     load_project_memory,
     parse_test_cases_file,
+    parse_uploaded_files,
     update_project_memory,
 )
 from memory_store import (
@@ -39,7 +40,7 @@ from memory_store import (
     search,
     update_agent_summary,
 )
-from pipeline_service import run_quip_to_cases
+from pipeline_service import run_quip_to_cases, run_upload_to_cases
 from risk_report_service import generate_risk_assessment_report
 
 CONFIG_DIR = os.path.dirname(AGENTS_CONFIG_PATH)
@@ -528,10 +529,24 @@ def _render_main_app(T: dict, cookies=None):
 
 
 def _render_module_quip_to_cases(T: dict, defaults: dict):
-    """工作台模块：Quip 转用例。三步：需求输入 → 配置与导出 → 执行。"""
+    """工作台模块：Quip 或文件上传 → 四 Agent → 测试用例。
+    支持两种输入：Quip 链接（含导出 Quip/Sheets）、文件上传（仅 Excel 下载）。"""
     st.caption(_get_text(T, "run_tab.page_caption") or "从 Quip 需求文档生成测试用例，支持导出 Excel / Quip / Google 表格。")
     st.markdown("<div style='margin-bottom:0.5rem'></div>", unsafe_allow_html=True)
 
+    demand_source = st.radio(
+        "需求来源",
+        options=["quip", "upload"],
+        format_func=lambda x: "Quip 链接" if x == "quip" else "文件上传（.md + .xlsx）",
+        key="run_demand_source",
+        horizontal=True,
+    )
+
+    if demand_source == "upload":
+        _render_upload_mode(T, defaults)
+        return
+
+    # ─── Quip 模式 ───
     # ① 需求输入
     st.markdown(f'<p class="step-label">{_get_text(T, "run_tab.step_1") or "① 需求输入"}</p>', unsafe_allow_html=True)
     quip_url = st.text_input(
@@ -709,6 +724,129 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
 
         with st.expander(_get_text(T, "run_tab.section_result") or "查看最终结果全文", expanded=False):
             st.markdown(r.get("result_str", ""))
+
+
+def _render_upload_mode(T: dict, defaults: dict):
+    """文件上传模式：上传 .md + .xlsx → 解析 → 四 Agent → 三块结果 + Excel 下载。
+    仅 Excel 下载，不配置导出路径、Quip、Sheets。"""
+    st.caption("支持多个 .md（需求文档）和 .xlsx（既有测试用例），可混合选择。至少需 1 个 .md。")
+
+    uploaded = st.file_uploader(
+        "上传需求文档与既有用例",
+        type=["md", "xlsx"],
+        accept_multiple_files=True,
+        key="run_upload_files",
+        help="支持多个 .md 和 .xlsx，可混合选择；单文件 &lt; 10MB，总 &lt; 50MB",
+    )
+
+    demand_md = ""
+    existing_cases = ""
+    preview_infos = []
+
+    if uploaded:
+        try:
+            demand_md, existing_cases, preview_infos = parse_uploaded_files(uploaded)
+        except Exception as e:
+            st.error(f"解析失败：{e}")
+        else:
+            for p in preview_infos:
+                name = p.get("name", "")
+                if p.get("type") == "md":
+                    prev = p.get("preview", "")[:200]
+                    st.caption(f"📄 {name} — {prev}…" if len(str(p.get("preview", ""))) > 200 else f"📄 {name} — {prev}")
+                else:
+                    st.caption(f"📊 {name} — {p.get('rows', 0)} 行")
+
+    if not demand_md and uploaded:
+        st.warning("至少需上传 1 个 .md 需求文档；或文件类型/大小不符要求。")
+
+    gemini_models_list, default_model = _load_models()
+    _model_opts = [m[0] for m in gemini_models_list]
+    _model_idx = next((i for i, (k, _) in enumerate(gemini_models_list) if k == (defaults.get("gemini_model") or default_model)), 0)
+    with st.expander("模型配置", expanded=not bool(defaults.get("gemini_key"))):
+        gemini_model = st.selectbox(
+            "Gemini 模型",
+            options=_model_opts,
+            index=_model_idx,
+            format_func=lambda x: dict(gemini_models_list).get(x, x),
+            key="run_upload_model",
+        )
+    st.caption("仅支持 Excel 下载，不配置导出路径。")
+
+    _upload_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "upload_running")
+    _upload_result_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "upload_last_run")
+    _upload_error_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "upload_last_error")
+
+    pipeline_running = st.session_state.get(_upload_key, False)
+    run_label = "运行中…" if pipeline_running else "开始生成"
+    if st.button(run_label, type="primary", use_container_width=True, key="run_upload_btn", disabled=pipeline_running):
+        if not demand_md:
+            st.error("请至少上传 1 个 .md 需求文档")
+        elif not defaults.get("gemini_key"):
+            st.error("请先在「设置」中配置 Gemini API Key")
+        else:
+            st.session_state[_upload_error_key] = None
+            st.session_state[_upload_key] = True
+            _ph = st.empty()
+            try:
+                with _ph.container():
+                    st.progress(0.3, text="分析文档并生成用例…")
+                with st.spinner("正在生成…"):
+                    result = run_upload_to_cases(
+                        demand_md=demand_md,
+                        existing_cases=existing_cases,
+                        gemini_key=defaults.get("gemini_key", ""),
+                        gemini_model=gemini_model,
+                        project_context=get_project_context_for_agent(),
+                    )
+                if not result["ok"]:
+                    st.session_state[_upload_error_key] = result.get("error", "执行失败")
+                    st.error(result.get("error", "执行失败"))
+                else:
+                    st.session_state[_upload_result_key] = result
+                    st.session_state[_upload_error_key] = None
+                    _ph.progress(1.0, text="完成")
+                    st.success("生成完成")
+            except Exception as e:
+                st.session_state[_upload_error_key] = str(e)
+                st.error(str(e))
+            finally:
+                _ph.empty()
+                st.session_state[_upload_key] = False
+
+    _last_err = st.session_state.get(_upload_error_key)
+    if _last_err and not pipeline_running:
+        st.error(_last_err)
+        if st.button("重试", key="run_upload_retry"):
+            st.session_state[_upload_error_key] = None
+            st.rerun()
+
+    r = st.session_state.get(_upload_result_key)
+    if not r:
+        st.info("上传文件后点击「开始生成」。结果将分为：理解内容、问题点、新用例表；支持下载 Excel。")
+        return
+
+    st.divider()
+    st.subheader("1. 理解内容")
+    st.markdown(r.get("understanding", "") or "*（无）*")
+
+    st.subheader("2. 问题点")
+    st.markdown(r.get("issues", "") or "*（无）*")
+
+    st.subheader("3. 新测试用例表")
+    st.markdown(r.get("cases_md", "") or "*（无）*")
+
+    excel_bytes = r.get("excel_bytes")
+    if excel_bytes:
+        st.download_button(
+            "📥 下载 Excel",
+            data=excel_bytes,
+            file_name="测试用例.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_upload_excel",
+        )
+    else:
+        st.caption("未解析到 Markdown 表格，无法导出 Excel。")
 
 
 def _render_module_risk_report(T: dict, defaults: dict):

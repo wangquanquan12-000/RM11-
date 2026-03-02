@@ -168,6 +168,95 @@ def _build_crew_from_config(
     )
 
 
+def _run_crew_sequential(
+    config: dict[str, Any],
+    project_context: str,
+    llm_demand: str,
+    stream: bool = False,
+) -> tuple[str, list[dict[str, str]]]:
+    """按 task1→task2→task3→task4 顺序执行，每次将上游输出通过 inputs 注入下游。返回 (最终输出, step_outputs)。"""
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_api_key:
+        raise ValueError("ERROR: GEMINI_API_KEY 未设置。")
+    model_name = _resolve_gemini_model(os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"))
+    llm = ChatGoogleGenerativeAI(
+        model=model_name,
+        google_api_key=gemini_api_key,
+        temperature=0.4,
+    )
+    tasks_cfg = config.get("tasks") or []
+    if not tasks_cfg:
+        return "", []
+
+    agents_cfg = config.get("agents") or []
+    agent_map: dict[str, Agent] = {}
+    for a in agents_cfg:
+        aid = a.get("id") or ""
+        agent_map[aid] = Agent(
+            role=a.get("role", ""),
+            goal=a.get("goal", ""),
+            backstory=(a.get("backstory") or "").strip(),
+            llm=llm,
+            verbose=True,
+        )
+
+    proj_ctx = (project_context or "").strip()
+    outputs: dict[str, str] = {}
+    step_outputs: list[dict[str, str]] = []
+
+    for t in tasks_cfg:
+        tid = t.get("id") or ""
+        agent_id = t.get("agent_id") or ""
+        agent = agent_map.get(agent_id)
+        if not agent:
+            continue
+
+        desc = (t.get("description") or "").strip()
+        desc = desc.replace("{project_context}", proj_ctx)
+
+        task_obj = Task(
+            description=desc,
+            expected_output=(t.get("expected_output") or "").strip(),
+            agent=agent,
+            context=None,
+        )
+        crew = Crew(agents=[agent], tasks=[task_obj], verbose=True, stream=stream)
+
+        inputs: dict[str, str] = {"prd_content": llm_demand}
+        if outputs.get("task1"):
+            inputs["task1_output"] = outputs["task1"]
+        if outputs.get("task2"):
+            inputs["task2_output"] = outputs["task2"]
+        if outputs.get("task3"):
+            inputs["task3_output"] = outputs["task3"]
+
+        if stream:
+            kickoff_result = crew.kickoff(inputs=inputs)
+            try:
+                current_content: list[str] = []
+                for chunk in kickoff_result:
+                    if getattr(chunk, "content", None):
+                        current_content.append(chunk.content)
+                raw = getattr(kickoff_result, "result", kickoff_result)
+                out_str = str(getattr(raw, "raw", raw))
+            except Exception:
+                out_str = str(crew.kickoff(inputs=inputs))
+        else:
+            result = crew.kickoff(inputs=inputs)
+            out_str = str(getattr(result, "raw", result))
+
+        out_str = (out_str or "").strip()
+        outputs[tid] = out_str
+        step_outputs.append({
+            "task": tid,
+            "agent": agent_id,
+            "content": out_str,
+        })
+
+    last_tid = tasks_cfg[-1].get("id") if tasks_cfg else ""
+    return outputs.get(last_tid, ""), step_outputs
+
+
 # ---------------------------------------------------------------------------
 # 需求加载（不依赖 API Key，可单独自检）
 # ---------------------------------------------------------------------------
@@ -703,7 +792,7 @@ def _get_crew(stream: bool = False) -> Crew:
 
     # Task 1：文档分析师 → 《需求风险评估报告》
     task1 = Task(
-        description="请以【文档分析师（The Auditor）】的身份，对以下需求文档进行深度扫描，并输出《需求风险评估报告》。\n\n要求覆盖：1) 模糊性审查（Ambiguity Check）；2) 逻辑冲突与遗漏（Conflict & Omission）；3) 极端场景推演（Edge Cases）。\n\n需求文档：\n{demand}",
+        description="请以【文档分析师（The Auditor）】的身份，对以下需求文档进行深度扫描，并输出《需求风险评估报告》。\n\n要求覆盖：1) 模糊性审查（Ambiguity Check）；2) 逻辑冲突与遗漏（Conflict & Omission）；3) 极端场景推演（Edge Cases）。\n\n需求文档：\n{prd_content}",
         expected_output="《需求风险评估报告》：以列表形式输出，每条包含【风险类型】+【问题描述】+【建议/疑问】；若无明显问题则列出最复杂的 3 个逻辑确认点。",
         agent=doubt_agent,
     )
@@ -888,6 +977,57 @@ def parse_test_cases_file(file_or_path) -> tuple[str, int]:
     return content, rows_count
 
 
+# 文件上传大小限制（PRD 安全规范）
+_MAX_SINGLE_FILE_BYTES = 10 * 1024 * 1024  # 10MB
+_MAX_TOTAL_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB
+
+
+def parse_uploaded_files(uploaded_files: list) -> tuple[str, str, list[dict[str, Any]]]:
+    """解析上传的 .md 与 .xlsx 文件，供「文件上传生成用例」使用。
+    返回 (需求文档合并文本, 既有用例合并文本, 预览信息列表)。
+    需至少 1 个 .md；.xlsx 可选。"""
+    md_parts: list[str] = []
+    xlsx_parts: list[str] = []
+    preview_infos: list[dict[str, Any]] = []
+    total_bytes = 0
+
+    for f in uploaded_files or []:
+        name = (getattr(f, "name", "") or "").strip()
+        ext = name.lower().rsplit(".", 1)[-1] if "." in name else ""
+        if ext not in ("md", "xlsx"):
+            continue
+
+        try:
+            raw = f.read() if hasattr(f, "read") else getattr(f, "getvalue", lambda: b"")()
+        except Exception:
+            continue
+        if not isinstance(raw, bytes):
+            raw = (raw or "").encode("utf-8") if raw else b""
+
+        size = len(raw)
+        if size > _MAX_SINGLE_FILE_BYTES:
+            continue  # 单文件超限则跳过
+        total_bytes += size
+        if total_bytes > _MAX_TOTAL_UPLOAD_BYTES:
+            break
+
+        if ext == "md":
+            text = raw.decode("utf-8-sig", errors="replace").strip()
+            md_parts.append(text)
+            preview_infos.append({"name": name, "type": "md", "preview": (text[:200] + "…") if len(text) > 200 else text})
+        else:  # xlsx
+            from io import BytesIO
+            _wrapper = BytesIO(raw)
+            _wrapper.name = name  # type: ignore
+            content, rows = parse_test_cases_file(_wrapper)
+            xlsx_parts.append(content)
+            preview_infos.append({"name": name, "type": "xlsx", "rows": rows})
+
+    demand_md = "\n\n---\n\n".join(md_parts) if md_parts else ""
+    existing_cases = "\n\n".join(xlsx_parts) if xlsx_parts else ""
+    return demand_md, existing_cases, preview_infos
+
+
 def tables_to_text(tables: list[list[list[str]]]) -> str:
     """将解析出的表格转为可读文本（| 分隔），供归档到项目记忆。"""
     lines: list[str] = []
@@ -959,6 +1099,32 @@ def _export_to_excel(tables: list[list[list[str]]], excel_path: str) -> bool:
     except Exception as e:
         print(f"导出 Excel 失败: {e}", file=sys.stderr)
         return False
+
+
+def export_tables_to_excel_bytes(tables: list[list[list[str]]]) -> bytes | None:
+    """将表格导出为 Excel 二进制，供 st.download_button 使用。不落盘，仅返回 bytes。"""
+    try:
+        from io import BytesIO
+        import openpyxl
+    except ImportError:
+        return None
+    if not tables:
+        return None
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "测试用例"
+    row_num = 0
+    for tbl in tables:
+        for r in tbl:
+            row_num += 1
+            for col_num, cell in enumerate(r, 1):
+                safe_value = _sanitize_cell_for_excel(cell)
+                ws.cell(row=row_num, column=col_num, value=safe_value)
+        if tbl:
+            row_num += 1
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 def _tables_to_html(tables: list[list[list[str]]]) -> str:
@@ -1261,59 +1427,70 @@ def run_pipeline(
     proj_ctx = project_context if project_context is not None else get_project_context_for_agent()
     stream = return_details
 
-    if use_config and yaml:
-        config = load_agents_config(agents_config_path or AGENTS_CONFIG_PATH)
-        if config:
-            crew = _get_crew_with_config(config, proj_ctx, stream=stream)
-        else:
-            use_config = False
-    if not use_config:
-        crew = _get_crew(stream=stream)
-
     # 入参脱敏：仅对传入大模型的内容做掩码处理，本地保存仍保留原始需求文本
     llm_demand = desensitize_for_llm(demand)
-    inputs = {"demand": llm_demand}
     step_outputs: list[dict[str, str]] = []
     quip_url: str | None = None
     sheets_url: str | None = None
     excel_path: str | None = None
 
-    if stream:
-        kickoff_result = crew.kickoff(inputs=inputs)
-        try:
-            current_task: str | None = None
-            current_agent: str | None = None
-            current_content: list[str] = []
-            for chunk in kickoff_result:
-                if getattr(chunk, "task_name", None):
-                    if current_task and current_content:
-                        step_outputs.append({
-                            "task": current_task,
-                            "agent": current_agent or "",
-                            "content": "".join(current_content).strip(),
-                        })
-                    current_task = getattr(chunk, "task_name", None) or ""
-                    current_agent = getattr(chunk, "agent_role", None) or ""
-                    current_content = []
-                if getattr(chunk, "content", None):
-                    current_content.append(chunk.content)
-            if current_task and current_content:
-                step_outputs.append({
-                    "task": current_task,
-                    "agent": current_agent or "",
-                    "content": "".join(current_content).strip(),
-                })
-        except Exception:
-            step_outputs = []
-        result = getattr(kickoff_result, "result", kickoff_result)
-        result_str = str(getattr(result, "raw", result))
-    else:
-        print("需求摘要:", demand[:200] + ("..." if len(demand) > 200 else ""))
-        print()
-        result = crew.kickoff(inputs=inputs)
-        result_str = str(result)
-        print("\n" + "=" * 60 + "\n")
-        print(result_str)
+    if use_config and yaml:
+        config = load_agents_config(agents_config_path or AGENTS_CONFIG_PATH)
+        if config:
+            # 采用顺序执行 + inputs 占位符注入（见 docs/四Agent任务编排-开发实施文档）
+            result_str, step_outputs = _run_crew_sequential(
+                config,
+                proj_ctx,
+                llm_demand,
+                stream=stream,
+            )
+            if not stream:
+                print("需求摘要:", demand[:200] + ("..." if len(demand) > 200 else ""))
+                print()
+                print("\n" + "=" * 60 + "\n")
+                print(result_str)
+        else:
+            use_config = False
+
+    if not use_config:
+        crew = _get_crew(stream=stream)
+        inputs = {"prd_content": llm_demand}
+        if stream:
+            kickoff_result = crew.kickoff(inputs=inputs)
+            try:
+                current_task: str | None = None
+                current_agent: str | None = None
+                current_content: list[str] = []
+                for chunk in kickoff_result:
+                    if getattr(chunk, "task_name", None):
+                        if current_task and current_content:
+                            step_outputs.append({
+                                "task": current_task,
+                                "agent": current_agent or "",
+                                "content": "".join(current_content).strip(),
+                            })
+                        current_task = getattr(chunk, "task_name", None) or ""
+                        current_agent = getattr(chunk, "agent_role", None) or ""
+                        current_content = []
+                    if getattr(chunk, "content", None):
+                        current_content.append(chunk.content)
+                if current_task and current_content:
+                    step_outputs.append({
+                        "task": current_task,
+                        "agent": current_agent or "",
+                        "content": "".join(current_content).strip(),
+                    })
+            except Exception:
+                step_outputs = []
+            result = getattr(kickoff_result, "result", kickoff_result)
+            result_str = str(getattr(result, "raw", result))
+        else:
+            print("需求摘要:", demand[:200] + ("..." if len(demand) > 200 else ""))
+            print()
+            result = crew.kickoff(inputs=inputs)
+            result_str = str(result)
+            print("\n" + "=" * 60 + "\n")
+            print(result_str)
 
     out_path, timestamp = _save_result(demand, result_str, output_dir, demand_title)
     if not stream:

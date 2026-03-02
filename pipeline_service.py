@@ -2,6 +2,7 @@
 """
 业务逻辑层：Quip → 四 Agent → 测试用例流水线
 与 Streamlit UI 解耦，供 app_ui 调用。
+支持：Quip 拉取、文件上传（.md + .xlsx）两种输入方式。
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from crew_test import (
     run_pipeline,
     _parse_markdown_tables,
     tables_to_text,
+    export_tables_to_excel_bytes,
 )
 from memory_store import (
     TEST_CASES_SOURCE_TYPE,
@@ -30,6 +32,15 @@ class QuipToCasesResult(TypedDict):
     demand_full: str
     archive_suffix: str
     archive_warning: str
+
+
+class UploadToCasesResult(TypedDict):
+    ok: bool
+    error: str | None
+    understanding: str
+    issues: str
+    cases_md: str
+    excel_bytes: bytes | None
 
 
 def run_quip_to_cases(
@@ -168,3 +179,102 @@ def run_quip_to_cases(
         "archive_warning": archive_warning,
     }
 
+
+def run_upload_to_cases(
+    demand_md: str,
+    existing_cases: str,
+    gemini_key: str,
+    gemini_model: str,
+    project_context: str = "",
+) -> UploadToCasesResult:
+    """文件上传模式：基于 .md 需求 + .xlsx 既有用例，跑四 Agent 流水线。
+    返回理解内容（task2）、问题点（task1）、新用例表（task3）、Excel 二进制。
+    仅支持 Excel 下载，不落盘、不导出 Quip/Sheets。"""
+    from crew_test import get_project_context_for_agent
+
+    os.environ["GEMINI_API_KEY"] = gemini_key or os.environ.get("GEMINI_API_KEY", "")
+    os.environ["GEMINI_MODEL"] = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    from crew_test import _resolve_gemini_model
+    os.environ["GEMINI_MODEL"] = _resolve_gemini_model(gemini_model or os.environ.get("GEMINI_MODEL", ""))
+
+    if not os.environ.get("GEMINI_API_KEY"):
+        return {
+            "ok": False,
+            "error": "未配置 Gemini API Key",
+            "understanding": "",
+            "issues": "",
+            "cases_md": "",
+            "excel_bytes": None,
+        }
+
+    demand = (demand_md or "").strip()
+    if not demand:
+        return {
+            "ok": False,
+            "error": "需求文档不能为空，请至少上传 1 个 .md 文件",
+            "understanding": "",
+            "issues": "",
+            "cases_md": "",
+            "excel_bytes": None,
+        }
+
+    base_ctx = (project_context or "").strip() or get_project_context_for_agent()
+    if (existing_cases or "").strip():
+        base_ctx = (base_ctx + "\n\n【既有测试用例】\n\n" + existing_cases.strip()).strip()
+
+    try:
+        out = run_pipeline(
+            demand,
+            output_dir="output",
+            export_excel=False,
+            export_quip=False,
+            export_sheets=False,
+            project_context=base_ctx,
+            return_details=True,
+        )
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "understanding": "",
+            "issues": "",
+            "cases_md": "",
+            "excel_bytes": None,
+        }
+
+    if not isinstance(out, dict):
+        return {
+            "ok": False,
+            "error": "流水线返回格式异常",
+            "understanding": "",
+            "issues": "",
+            "cases_md": "",
+            "excel_bytes": None,
+        }
+
+    step_outputs = out.get("step_outputs") or []
+    understanding = ""
+    issues = ""
+    cases_md = ""
+
+    for s in step_outputs:
+        tid = s.get("task") or ""
+        content = (s.get("content") or "").strip()
+        if tid == "task1":
+            issues = content
+        elif tid == "task2":
+            understanding = content
+        elif tid == "task3":
+            cases_md = content
+
+    tables = _parse_markdown_tables(cases_md or out.get("result_str", ""))
+    excel_bytes = export_tables_to_excel_bytes(tables) if tables else None
+
+    return {
+        "ok": True,
+        "error": None,
+        "understanding": understanding,
+        "issues": issues,
+        "cases_md": cases_md,
+        "excel_bytes": excel_bytes,
+    }

@@ -1,0 +1,174 @@
+# 四 Agent 任务编排 · 开发实施文档
+
+> **文档用途**：占位符实现方式、CrewAI 兼容说明、具体代码改造点及实施步骤。
+>
+> **创建日期**：2025-03-02
+
+---
+
+## 一、占位符与实现方式映射
+
+| 占位符 | 实现方式 | 说明 |
+|--------|----------|------|
+| `{prd_content}` | `inputs = {"prd_content": demand}` | 将原有 `demand` 改为 `prd_content`，通过 CrewAI `kickoff(inputs=...)` 传入 |
+| `{project_context}` | `desc.replace("{project_context}", project_context)` | 沿用现有逻辑，在 `_build_crew_from_config` 构建 Task 时替换 |
+| `{task1_output}` | 依赖 CrewAI `context=[task1]` 或自定义执行循环中替换 | 若 CrewAI 的 context 能正确注入上游输出则用原生；否则采用顺序执行 + 手动替换 |
+| `{task2_output}` | 同上 | 同上 |
+| `{task3_output}` | 同上 | 同上 |
+
+---
+
+## 二、CrewAI 兼容说明
+
+### 2.1 `{prd_content}` 通过 inputs 传入
+
+- CrewAI 的 Task `description` 中可使用 `{variable_name}`，在执行时由 `inputs` 字典提供。
+- 当前代码使用 `inputs = {"demand": llm_demand}`，task 中为 `{demand}`。
+- **改造**：统一改为 `inputs = {"prd_content": demand}`，task description 中 `{demand}` 改为 `{prd_content}`。
+
+### 2.2 `{taskN_output}` 的三种处理方式
+
+| 方式 | 说明 | 适用场景 |
+|------|------|----------|
+| **A 原生** | 依赖 CrewAI 的 `Task(context=[task1])`，由框架自动将 task1 的输出注入到 task2 的上下文中 | CrewAI 版本支持且实际注入正确时 |
+| **B 依赖 context** | 在构建 Task 时设置 `context=[task1]`，CrewAI 会将上游输出作为「前文」传给下游；需确认下游 description 中是否需显式 `{task1_output}` | 框架文档支持 context 传递时 |
+| **C 自定义执行循环** | 不依赖 CrewAI 的 context，改为顺序执行：先跑 task1，取输出；再构建 task2 description，将 `{task1_output}` 替换为 task1 的实际输出，再跑 task2；依次类推 | 当 A/B 无法正确注入时，作为兜底方案 |
+
+**结论**：若 CrewAI 的 context 不能正确注入上游输出，则需采用 **C 自定义执行循环**，在每次执行前替换对应占位符。
+
+---
+
+## 三、具体代码改造点
+
+### 3.1 run_pipeline 的 inputs
+
+**现状**（`crew_test.py`）：
+
+```python
+inputs = {"demand": llm_demand}
+```
+
+**改造后**：
+
+```python
+inputs = {"prd_content": llm_demand}
+```
+
+并确保 `config/agents.yaml` 中 task1 的 description 使用 `{prd_content}` 而非 `{demand}`。
+
+### 3.2 _build_crew_from_config 扩展
+
+**现状**：仅对 `{project_context}` 做 `replace`。
+
+**改造**：增加对 `{prd_content}` 的处理。由于 `{prd_content}` 通过 `inputs` 传入，**无需**在 `_build_crew_from_config` 中替换；CrewAI 会在 kickoff 时注入。
+
+对于 `{task1_output}`、`{task2_output}`、`{task3_output}`：
+
+- **若采用 A/B**：依赖 CrewAI context，不在 build 阶段替换。
+- **若采用 C**：不在 `_build_crew_from_config` 中处理，改为在自定义执行循环中，每次执行前对当前 task 的 description 做 `replace("{task1_output}", task1_result)` 等。
+
+### 3.3 自定义执行循环（方式 C）伪代码
+
+```python
+# 顺序执行：task1 -> task2 -> task3 -> task4
+task1_result = run_task(crew, task1, inputs={"prd_content": demand})
+task2_desc = get_task_description(task2)
+task2_desc = task2_desc.replace("{task1_output}", task1_result)
+task2_result = run_task(crew, task2, inputs={"prd_content": demand, "task1_output": task1_result})
+# ... 依此类推
+```
+
+实际实现时需根据 CrewAI API 确定如何对单个 Task 执行并获取输出。
+
+---
+
+## 四、config/agents.yaml 示例（任务描述与占位符保持一致）
+
+```yaml
+tasks:
+  - id: task1
+    agent_id: doubt_agent
+    description: |
+      请以【文档分析师（The Auditor）】的身份，对以下需求文档进行深度扫描，并输出《需求风险评估报告》。
+      要求覆盖：1) 模糊性审查；2) 逻辑冲突与遗漏；3) 极端场景推演。
+      {project_context}
+      需求文档：
+      {prd_content}
+    expected_output: "《需求风险评估报告》：以列表形式输出，每条包含【风险类型】+【问题描述】+【建议/疑问】；若无明显问题则列出最复杂的 3 个逻辑确认点。"
+
+  - id: task2
+    agent_id: organize_agent
+    context: [task1]
+    description: |
+      请以【测试点拆解师（The Planner）】的身份，基于上一任务（文档分析师）输出的《需求风险评估报告》与需求文档，将内容转化为结构清晰、覆盖全面的「测试点」骨架。
+      须遵循：模块化分组、原子化原则、逻辑继承。
+      【task1 输出 - 需求风险评估报告】
+      {task1_output}
+      【需求文档】
+      {prd_content}
+      {project_context}
+    expected_output: "测试点思维导图：Markdown 层级列表，结构为「模块名称 → 子模块/场景 → [P0] 核心测试点 / [P1] 异常边界 / [P2] UI 文案」。"
+
+  - id: task3
+    agent_id: case_agent
+    context: [task2]
+    description: |
+      请以【Fambase 专属资深全栈测试专家】的身份，根据上一任务产出的测试点，输出符合《Nicholas 交付宪法》的测试用例。
+      表头为 | 用例ID | 模块 | 场景 | 用例概述 | 优先级 | 前置条件 | 操作步骤 | 预期结果 |；呼吸感排版；预期结果去动词化；覆盖极端场景与回归验证。
+      【task2 输出 - 测试点骨架】
+      {task2_output}
+      {project_context}
+    expected_output: "符合《Nicholas 交付宪法》的测试用例：Markdown 表格，固定表头，呼吸感排版，预期结果去动词化。"
+
+  - id: task4
+    agent_id: review_agent
+    context: [task3]
+    description: |
+      请以【用例审查官（The Reviewer）】的身份，对上一任务产出的测试用例，严格按照四大验收标准逐条审查（呼吸感、预期结果、逻辑覆盖率、冗余、表格字段）。
+      若有问题请指出【用例ID】+【错误类型】+【修改建议】或给出修正后的完整 Markdown 表格；若完美则输出：「✅ 通过审查，用例符合 Fambase 交付标准。」
+      【task3 输出 - 测试用例】
+      {task3_output}
+    expected_output: "审查结论：若存在问题则列出【用例ID】+【错误类型】+【修改建议】；若通过则输出：「✅ 通过审查，用例符合 Fambase 交付标准。」"
+```
+
+---
+
+## 五、9 列新表头与表格解析/导出的兼容说明
+
+### 5.1 当前表头（8 列）
+
+| 用例ID | 模块 | 场景 | 用例概述 | 优先级 | 前置条件 | 操作步骤 | 预期结果 |
+
+### 5.2 若扩展为 9 列
+
+若业务需要新增列（如「依赖模块」「备注」等），需同步调整：
+
+1. **config/agents.yaml**：case_agent 的 backstory 与 task3 的 description 中表头描述。
+2. **_parse_markdown_tables**：解析逻辑基于 `|` 分隔，列数自动适配，**无需修改**。
+3. **_export_to_excel**：按行写入，列数自动适配，**无需修改**。
+4. **Excel 下载**：列宽与表头展示由 openpyxl 默认处理，通常无需改动。
+
+结论：表格解析与导出按「行 + 列」结构处理，列数变化不会破坏现有逻辑，只需保证 Agent 输出的 Markdown 表格格式正确（`|` 分隔、表头与分隔行完整）。
+
+---
+
+## 六、实施步骤与占位符可用性检查清单
+
+### 6.1 实施步骤
+
+1. 修改 `config/agents.yaml`：将 task1 的 `{demand}` 改为 `{prd_content}`；task2–task4 按需求文档补充 `{task1_output}`、`{task2_output}`、`{task3_output}`。
+2. 修改 `crew_test.run_pipeline`：`inputs = {"prd_content": llm_demand}`。
+3. 验证 CrewAI context 是否注入上游输出：
+   - 若 task2 能正确拿到 task1 的结果，则无需改动执行逻辑。
+   - 若不能，则实现自定义顺序执行 + 占位符替换（方式 C）。
+4. 回归测试：跑一次完整流水线，检查 task1–task4 输出是否符合预期，Excel 导出是否正常。
+
+### 6.2 占位符可用性检查清单
+
+| 占位符 | 检查项 | 验证方式 |
+|--------|--------|----------|
+| `{prd_content}` | 在 task1 的 description 中能被替换为实际需求文本 | 查看 task1 输出是否基于传入的需求内容 |
+| `{project_context}` | 在 task1–task3 的 description 中被正确替换 | 输出中应体现项目背景/知识库摘要 |
+| `{task1_output}` | 在 task2 的 description 中被替换为 task1 的实际输出 | 查看 task2 输出是否引用了风险报告内容 |
+| `{task2_output}` | 在 task3 的 description 中被替换为 task2 的实际输出 | 查看 task3 输出是否基于测试点骨架 |
+| `{task3_output}` | 在 task4 的 description 中被替换为 task3 的实际输出 | 查看 task4 审查是否针对实际用例表格 |
