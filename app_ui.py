@@ -3,6 +3,7 @@
 可视化界面：Quip 文档链接 → 四 Agent 流水线 → 表格链接
 文案可在 config/ui_texts.yaml 中编辑，无需改代码。
 """
+import json
 import os
 import sys
 
@@ -212,6 +213,54 @@ def _load_workbench_apps(T: dict) -> list[dict]:
 
 def _get_module_state_key(module_id: str, suffix: str) -> str:
     return f"app_{module_id}_{suffix}"
+
+
+def _build_agents_snapshot(agents: list, tasks: list) -> dict:
+    """从 agents/tasks 构造稳定快照，用于脏标记与保存一致性校验。"""
+    snap_agents = [
+        {
+            "id": (a.get("id") or "").strip(),
+            "role": (a.get("role") or "").strip(),
+            "goal": (a.get("goal") or "").strip(),
+            "backstory": (a.get("backstory") or "").strip(),
+        }
+        for a in agents
+    ]
+    snap_tasks = [
+        {
+            "id": (t.get("id") or "").strip(),
+            "agent_id": (t.get("agent_id") or "").strip(),
+            "description": (t.get("description") or "").strip(),
+            "expected_output": (t.get("expected_output") or "").strip(),
+        }
+        for t in tasks
+    ]
+    return {"agents": snap_agents, "tasks": snap_tasks}
+
+
+def _get_agents_tasks_from_state(config: dict, session_state) -> tuple[list, list]:
+    """从 session_state 组装当前表单对应的 agents/tasks（与保存逻辑一致）。"""
+    agents = config.get("agents") or []
+    tasks = config.get("tasks") or []
+    new_agents = []
+    for i in range(len(agents)):
+        a = agents[i]
+        na = {k: v for k, v in a.items() if k not in ("id", "role", "goal", "backstory")}
+        na["id"] = session_state.get(f"agent_id_{i}", a.get("id", ""))
+        na["role"] = session_state.get(f"agent_role_{i}", a.get("role", ""))
+        na["goal"] = session_state.get(f"agent_goal_{i}", a.get("goal", ""))
+        na["backstory"] = (session_state.get(f"agent_back_{i}", "") or "").strip()
+        new_agents.append(na)
+    new_tasks = []
+    for i in range(len(tasks)):
+        t = tasks[i]
+        nt = {k: v for k, v in t.items() if k not in ("id", "agent_id", "description", "expected_output")}
+        nt["id"] = session_state.get(f"task_id_{i}", t.get("id", ""))
+        nt["agent_id"] = session_state.get(f"task_agent_{i}", t.get("agent_id", ""))
+        nt["description"] = (session_state.get(f"task_desc_{i}", "") or "").strip()
+        nt["expected_output"] = session_state.get(f"task_out_{i}", t.get("expected_output", ""))
+        new_tasks.append(nt)
+    return new_agents, new_tasks
 
 
 def _ensure_task_context(module_id: str) -> None:
@@ -809,42 +858,45 @@ def _render_module_agents(T: dict):
                 st.text_area("description", value=(t.get("description") or "").strip(), key=f"task_desc_{i}", height=100)
                 st.text_input("expected_output", value=t.get("expected_output", ""), key=f"task_out_{i}")
         _last_hash_key = _get_module_state_key(MODULE_AGENTS, "last_saved_hash")
-        _current = {"agents": [{"id": st.session_state.get(f"agent_id_{i}", a.get("id")), "role": st.session_state.get(f"agent_role_{i}", a.get("role")), "goal": st.session_state.get(f"agent_goal_{i}", a.get("goal")), "backstory": st.session_state.get(f"agent_back_{i}", a.get("backstory"))} for i, a in enumerate(agents)], "tasks": [{"id": st.session_state.get(f"task_id_{i}", t.get("id")), "agent_id": st.session_state.get(f"task_agent_{i}", t.get("agent_id")), "description": st.session_state.get(f"task_desc_{i}", t.get("description")), "expected_output": st.session_state.get(f"task_out_{i}", t.get("expected_output"))} for i, t in enumerate(tasks)]}
+        new_agents, new_tasks = _get_agents_tasks_from_state(config, st.session_state)
+        snapshot_now = _build_agents_snapshot(new_agents, new_tasks)
+        _snapshot_str = json.dumps(snapshot_now, ensure_ascii=False, sort_keys=True)
         if _last_hash_key not in st.session_state:
-            st.session_state[_last_hash_key] = str(_current)
-        elif st.session_state[_last_hash_key] != str(_current):
+            st.session_state[_last_hash_key] = json.dumps(
+                _build_agents_snapshot(agents, tasks), ensure_ascii=False, sort_keys=True
+            )
+        if st.session_state[_last_hash_key] != _snapshot_str:
             st.session_state[_get_module_state_key(MODULE_AGENTS, "dirty")] = True
+        else:
+            st.session_state[_get_module_state_key(MODULE_AGENTS, "dirty")] = False
         if st.button(_get_text(T, "agents_tab.save_btn") or "保存配置到 config/agents.yaml", type="primary", key="agents_save_config"):
-            try:
-                import yaml
-                # 保存时从 session_state 重新组装 config，避免 Streamlit 重跑时取值不符（见 docs/fix-agents-save-for-programming.md）
-                new_agents = []
-                for i in range(len(agents)):
-                    na = {k: v for k, v in agents[i].items() if k not in ("id", "role", "goal", "backstory")}
-                    na["id"] = st.session_state.get(f"agent_id_{i}", agents[i].get("id", ""))
-                    na["role"] = st.session_state.get(f"agent_role_{i}", agents[i].get("role", ""))
-                    na["goal"] = st.session_state.get(f"agent_goal_{i}", agents[i].get("goal", ""))
-                    na["backstory"] = (st.session_state.get(f"agent_back_{i}", "") or "").strip()
-                    new_agents.append(na)
-                new_tasks = []
-                for i in range(len(tasks)):
-                    nt = {k: v for k, v in tasks[i].items() if k not in ("id", "agent_id", "description", "expected_output")}
-                    nt["id"] = st.session_state.get(f"task_id_{i}", tasks[i].get("id", ""))
-                    nt["agent_id"] = st.session_state.get(f"task_agent_{i}", tasks[i].get("agent_id", ""))
-                    nt["description"] = (st.session_state.get(f"task_desc_{i}", "") or "").strip()
-                    nt["expected_output"] = st.session_state.get(f"task_out_{i}", tasks[i].get("expected_output", ""))
-                    new_tasks.append(nt)
-                to_save = {k: v for k, v in config.items() if k not in ("agents", "tasks")}
-                to_save["agents"] = new_agents
-                to_save["tasks"] = new_tasks
-                with open(AGENTS_CONFIG_PATH, "w", encoding="utf-8") as f:
-                    yaml.dump(to_save, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-                st.session_state[_get_module_state_key(MODULE_AGENTS, "dirty")] = False
-                st.session_state[_get_module_state_key(MODULE_AGENTS, "last_saved_hash")] = str(to_save)
-                st.success("已保存，下次生成用例将使用新配置")
-                st.rerun()
-            except Exception as e:
-                st.error(f"保存失败：{e}")
+            snapshot_expected_str = _snapshot_str
+            last_saved_str = st.session_state.get(_last_hash_key, "")
+            if last_saved_str and snapshot_expected_str == last_saved_str:
+                st.info(_get_text(T, "common.save_no_change") or "内容未变更，无需保存")
+            else:
+                try:
+                    import yaml
+                    to_save = {k: v for k, v in config.items() if k not in ("agents", "tasks")}
+                    to_save["agents"] = new_agents
+                    to_save["tasks"] = new_tasks
+                    with open(AGENTS_CONFIG_PATH, "w", encoding="utf-8") as f:
+                        yaml.dump(to_save, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                    saved = load_agents_config()
+                    snap_saved = _build_agents_snapshot(saved.get("agents", []), saved.get("tasks", []))
+                    snap_expected = _build_agents_snapshot(new_agents, new_tasks)
+                    if json.dumps(snap_saved, ensure_ascii=False, sort_keys=True) == json.dumps(snap_expected, ensure_ascii=False, sort_keys=True):
+                        st.session_state[_last_hash_key] = json.dumps(snap_saved, ensure_ascii=False, sort_keys=True)
+                        st.session_state[_get_module_state_key(MODULE_AGENTS, "dirty")] = False
+                        st.success(_get_text(T, "agents_tab.save_success") or "已保存，下次生成用例将使用新配置")
+                        st.rerun()
+                    else:
+                        st.error(_get_text(T, "agents_tab.save_fail_mismatch") or "保存失败：写入内容与预期不一致，请刷新页面后重试")
+                except Exception as e:
+                    st.error(
+                        (_get_text(T, "agents_tab.save_fail_io") or "保存失败：无法写入配置文件，请检查磁盘权限或稍后重试")
+                        + f"（{e}）"
+                    )
 
 def _render_module_memory(T: dict, defaults: dict):
     """工作台模块：项目记忆。"""

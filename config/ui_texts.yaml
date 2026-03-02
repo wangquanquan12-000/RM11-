@@ -19,6 +19,9 @@ auth:
   logout_btn: "退出登录"
   logged_in_as: "当前用户"
 
+common:
+  save_no_change: "内容未变更，无需保存"
+
 app:
   title: "用例工坊 · AI 测试协作平台"
   page_title: "用例工坊 · AI 测试协作平台"
@@ -87,6 +90,9 @@ agents_tab:
   section_title: "编辑 Agent 与 Task"
   section_caption: "修改角色、目标与任务描述后，点击底部「保存配置」生效。"
   save_btn: "保存配置到 config/agents.yaml"
+  save_success: "已保存，下次生成用例将使用新配置"
+  save_fail_io: "保存失败：无法写入配置文件，请检查磁盘权限或稍后重试"
+  save_fail_mismatch: "保存失败：写入内容与预期不一致，请刷新页面后重试"
 
 memory_tab:
   section_title: "项目记忆"
