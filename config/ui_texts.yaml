@@ -23,8 +23,8 @@ common:
   save_no_change: "内容未变更，无需保存"
 
 app:
-  title: "gongfang · AI 测试协作平台"
-  page_title: "gongfang · AI 测试协作平台"
+  title: "用例工坊 · AI 测试协作平台"
+  page_title: "用例工坊 · AI 测试协作平台"
   slogan: "需求即输入，用例即输出，AI 全程协同一键生成"
   version_label: "版本"
   settings: "设置"
@@ -40,12 +40,9 @@ tabs:
 
 run_tab:
   go_settings: "去设置"
-  page_caption: "从需求文档生成测试用例，支持上传、粘贴或 Quip 链接，导出 Excel / Quip / Google 表格。"
+  page_caption: "从需求文档生成测试用例，支持上传或粘贴，导出 Excel。"
   demand_source_upload: "上传文件"
   demand_source_paste: "粘贴文本"
-  demand_source_quip: "Quip 链接（高级）"
-  quip_advanced_label: "高级来源：Quip 链接"
-  quip_advanced_hint: "Quip 链接为额外来源，非唯一入口；使用 Quip 时将按 Quip 流程执行。"
   paste_placeholder: "在此粘贴 PRD 或需求文档内容…"
   paste_xlsx_hint: "可同时上传 .xlsx 作为既有用例上下文（可选）"
   history_section: "历史记录"

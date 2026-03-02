@@ -40,7 +40,7 @@ from memory_store import (
     search,
     update_agent_summary,
 )
-from pipeline_service import run_quip_to_cases, run_upload_to_cases
+from pipeline_service import run_upload_to_cases
 from risk_report_service import generate_risk_assessment_report
 
 CONFIG_DIR = os.path.dirname(AGENTS_CONFIG_PATH)
@@ -439,7 +439,7 @@ def _get_text(data: dict, path: str, default: str = "") -> str:
 
 def _render_main_app(T: dict, cookies=None):
     """主应用：侧栏导航 + 主区内容。"""
-    app_title = _get_text(T, "app.title") or "gongfang · AI 测试协作平台"
+    app_title = _get_text(T, "app.title") or "用例工坊 · AI 测试协作平台"
     defaults = _load_defaults()
     workbench_apps = _load_workbench_apps(T)
 
@@ -576,18 +576,16 @@ def _render_main_app(T: dict, cookies=None):
 
 
 def _render_module_quip_to_cases(T: dict, defaults: dict):
-    """工作台模块：上传 / 粘贴 / Quip → 四 Agent → 测试用例。
-    主入口为上传与粘贴，Quip 作为高级来源。"""
-    st.caption(_get_text(T, "run_tab.page_caption") or "从需求文档生成测试用例，支持上传、粘贴或 Quip 链接。")
+    """工作台模块：上传 / 粘贴 → 四 Agent → 测试用例。F1：完全移除 Quip，仅保留上传与粘贴。"""
+    st.caption(_get_text(T, "run_tab.page_caption") or "从需求文档生成测试用例，支持上传或粘贴，导出 Excel。")
     st.markdown("<div style='margin-bottom:0.5rem'></div>", unsafe_allow_html=True)
 
     demand_source = st.radio(
         "需求来源",
-        options=["upload", "paste", "quip"],
+        options=["upload", "paste"],
         format_func=lambda x: {
             "upload": _get_text(T, "run_tab.demand_source_upload") or "上传文件",
             "paste": _get_text(T, "run_tab.demand_source_paste") or "粘贴文本",
-            "quip": _get_text(T, "run_tab.demand_source_quip") or "Quip 链接（高级）",
         }.get(x, x),
         key="run_demand_source",
         horizontal=True,
@@ -602,143 +600,7 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
         _render_upload_mode(T, defaults)
         _render_run_history(T)
         return
-    if demand_source == "paste":
-        _render_paste_mode(T, defaults)
-        _render_run_history(T)
-        return
-
-    # ─── Quip 模式（高级来源） ───
-    # ① 需求输入
-    st.markdown(f'<p class="step-label">{_get_text(T, "run_tab.step_1") or "① 需求输入"}</p>', unsafe_allow_html=True)
-    quip_url = st.text_input(
-        _get_text(T, "run_tab.quip_url_label") or "需求文档链接",
-        placeholder=_get_text(T, "run_tab.quip_url_placeholder") or "粘贴 Quip 文档链接或 thread_id",
-        key="run_quip_url",
-        label_visibility="collapsed",
-    )
-    if not quip_url or not quip_url.strip():
-        st.caption(_get_text(T, "run_tab.quip_url_hint") or "示例：https://quip.com/xxx 或 12 位 thread_id")
-        if st.button(_get_text(T, "app.try_example") or "试试示例", key="run_try_example"):
-            st.session_state["run_quip_url"] = "https://quip.com/example"
-            st.rerun()
-
-    # ② 配置与导出
-    st.markdown(f'<p class="step-label" style="margin-top:1.25rem">{_get_text(T, "run_tab.step_2") or "② 配置与导出"}</p>', unsafe_allow_html=True)
-    _has_saved = bool(defaults.get("quip_token") and defaults.get("gemini_key"))
-    _exp_label = "配置（已保存 ✓）" if _has_saved else "配置（未保存，请填写）"
-    with st.expander(_exp_label, expanded=not _has_saved):
-        gemini_models_list, default_model = _load_models()
-        _model_opts = [m[0] for m in gemini_models_list]
-        _model_idx = next((i for i, (k, _) in enumerate(gemini_models_list) if k == (defaults.get("gemini_model") or default_model)), 0)
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            gemini_model = st.selectbox(
-                _get_text(T, "run_tab.gemini_model_label") or "Gemini 模型",
-                options=_model_opts,
-                index=_model_idx,
-                format_func=lambda x: dict(gemini_models_list).get(x, x),
-                key="run_gemini_model",
-            )
-        with c2:
-            if st.button(_get_text(T, "run_tab.go_settings") or "去设置", key="run_go_settings"):
-                st.session_state["current_page"] = MODULE_SETTINGS
-                st.rerun()
-        st.caption("Excel 默认生成并可下载。")
-        ex_row1, ex_row2 = st.columns([1, 1])
-        with ex_row1:
-            export_quip = st.checkbox(_get_text(T, "run_tab.export_quip") or "导出到 Quip", value=False, key="run_export_quip")
-        with ex_row2:
-            export_sheets = st.checkbox(_get_text(T, "run_tab.export_sheets") or "导出到 Google 表格", value=False, key="run_export_sheets")
-        export_quip_target = st.text_input(
-            _get_text(T, "run_tab.export_quip_target_label") or "Quip 目标文档（可选）",
-            placeholder=_get_text(T, "run_tab.export_quip_target_placeholder") or "留空则新建；填写则追加到该文档末尾",
-            key="export_quip_target",
-        )
-        auto_archive = st.checkbox(
-            _get_text(T, "run_tab.auto_archive_label") or "生成后自动归档到全回归用例",
-            value=False,
-            key="run_auto_archive",
-            help=_get_text(T, "run_tab.auto_archive_help"),
-        )
-
-    quip_token = defaults.get("quip_token", "")
-    gemini_key = defaults.get("gemini_key", "")
-
-    # ③ 执行
-    st.markdown(f'<p class="step-label" style="margin-top:1.25rem">{_get_text(T, "run_tab.step_3") or "③ 执行"}</p>', unsafe_allow_html=True)
-    pipeline_running = st.session_state.get(_get_module_state_key(MODULE_QUIP_TO_CASES, "running"), False)
-    run_btn_label = (_get_text(T, "run_tab.run_spinner") or "运行中…") if pipeline_running else (_get_text(T, "run_tab.run_btn") or "生成测试用例")
-    if st.button(run_btn_label, type="primary", use_container_width=True, key="run_pipeline_btn", disabled=pipeline_running):
-        if not quip_url or not quip_url.strip():
-            st.error(_get_text(T, "run_tab.quip_url_required") or "请先填写需求文档链接")
-        else:
-            st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = None
-            st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = True
-            _progress_placeholder = st.empty()
-            try:
-                with _progress_placeholder.container():
-                    st.progress(0.2, text="需求拉取与生成中…")
-                with st.spinner(_get_text(T, "run_tab.run_spinner") or "正在拉取需求并生成用例…"):
-                    result = run_quip_to_cases(
-                        quip_url=quip_url.strip(),
-                        quip_token=quip_token or "",
-                        gemini_key=gemini_key or "",
-                        gemini_model=gemini_model,
-                        export_quip=export_quip,
-                        export_sheets=export_sheets,
-                        export_quip_target=(export_quip_target or "").strip() or None,
-                        auto_archive=auto_archive,
-                        output_dir=_get_output_dir(),
-                    )
-                if not result["ok"]:
-                    err_msg = result.get("error") or (_get_text(T, "run_tab.pipeline_fail") or "执行失败")
-                    st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = err_msg
-                    st.error(err_msg)
-                else:
-                    _r = result["last_run"] or {}
-                    st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = None
-                    st.session_state["app_last_run"] = _r
-                    st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = _r
-                    if _r:
-                        _save_last_run(_r)
-                        try:
-                            from run_history import add_run_record
-                            add_run_record(
-                                source_type="Quip",
-                                demand_title=_r.get("demand_title") or "Quip 文档",
-                                result_str=_r.get("result_str", ""),
-                                excel_path=_r.get("excel_path"),
-                                txt_path=_r.get("txt_path"),
-                                quip_url=_r.get("quip_url"),
-                                sheets_url=_r.get("sheets_url"),
-                            )
-                        except Exception:
-                            pass
-                    st.session_state["app_last_demand_snippet"] = result.get("demand_snippet", "")
-                    st.session_state["app_last_demand_full"] = result.get("demand_full", "")
-                    archive_warning = result.get("archive_warning", "")
-                    if archive_warning:
-                        st.warning(archive_warning)
-                    _progress_placeholder.progress(1.0, text="完成")
-                    _progress_placeholder.empty()
-                    success_msg = (_get_text(T, "run_tab.run_success") or "生成完成") + (result.get("archive_suffix") or "")
-                    st.success(success_msg)
-            finally:
-                _progress_placeholder.empty()
-                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = False
-
-    _last_error = st.session_state.get(_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error"))
-    if _last_error and not st.session_state.get(_get_module_state_key(MODULE_QUIP_TO_CASES, "running"), False):
-        st.markdown("""
-        <div class="card-style" style="border-left: 4px solid var(--color-error); background: #fef2f2;">
-            <p style="margin:0 0 0.5rem 0; font-weight: 500;">执行失败</p>
-            <p style="margin:0; color: var(--color-error);">{error_msg}</p>
-        </div>
-        """.format(error_msg=_last_error.replace("<", "&lt;").replace(">", "&gt;")), unsafe_allow_html=True)
-        if st.button(_get_text(T, "run_tab.retry_btn") or "重试", key="run_retry_btn"):
-            st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = None
-            st.rerun()
-
+    _render_paste_mode(T, defaults)
     _render_run_history(T)
 
 
@@ -949,17 +811,11 @@ def _render_paste_mode(T: dict, defaults: dict):
 
     r = st.session_state.get(_paste_result_key)
     if not r:
-        st.info("粘贴需求内容后点击「开始生成」。结果将分为：理解内容、问题点、新用例表；支持下载 Excel。")
+        st.info("粘贴需求内容后点击「开始生成」。仅展示新测试用例表与 Excel 下载。")
         return
 
     st.divider()
-    st.subheader("1. 理解内容")
-    st.markdown(r.get("understanding", "") or "*（无）*")
-
-    st.subheader("2. 问题点")
-    st.markdown(r.get("issues", "") or "*（无）*")
-
-    st.subheader("3. 新测试用例表")
+    st.subheader("新测试用例表")
     st.markdown(r.get("cases_md", "") or "*（无）*")
 
     excel_bytes = r.get("excel_bytes")
@@ -1110,17 +966,11 @@ def _render_upload_mode(T: dict, defaults: dict):
 
     r = st.session_state.get(_upload_result_key)
     if not r:
-        st.info("上传 .md/.docx 需求文档或 .xlsx 既有用例后点击「开始生成」。结果将分为：理解内容、问题点、新用例表；支持下载 Excel。")
+        st.info("上传 .md/.docx 需求文档或 .xlsx 既有用例后点击「开始生成」。仅展示新测试用例表与 Excel 下载。")
         return
 
     st.divider()
-    st.subheader("1. 理解内容")
-    st.markdown(r.get("understanding", "") or "*（无）*")
-
-    st.subheader("2. 问题点")
-    st.markdown(r.get("issues", "") or "*（无）*")
-
-    st.subheader("3. 新测试用例表")
+    st.subheader("新测试用例表")
     st.markdown(r.get("cases_md", "") or "*（无）*")
 
     excel_bytes = r.get("excel_bytes")
@@ -1822,7 +1672,7 @@ def _render_module_settings(T: dict, defaults: dict):
 def main():
     """入口：直接进入主应用。"""
     T = _load_ui_texts()
-    page_title = _get_text(T, "app.page_title") or "gongfang · AI 测试协作平台"
+    page_title = _get_text(T, "app.page_title") or "用例工坊 · AI 测试协作平台"
     st.set_page_config(page_title=page_title, layout="wide", initial_sidebar_state="expanded")
     _render_main_app(T)
 
