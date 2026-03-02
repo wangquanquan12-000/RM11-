@@ -234,7 +234,9 @@ def _load_version() -> dict:
         if os.path.isfile(VERSION_PATH):
             with open(VERSION_PATH, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-                return {"version": data.get("version", ""), "build_time": data.get("build_time", "")}
+                v = data.get("version", "")
+                b = data.get("build_time", "")
+                return {"version": str(v) if v else "", "build_time": str(b) if b else ""}
     except Exception:
         pass
     return {"version": "", "build_time": ""}
@@ -538,8 +540,8 @@ def _render_main_app(T: dict, cookies=None):
         st.divider()
         # 版本号：便于验证线上代码已成功更新
         ver_info = _load_version()
-        ver_str = ver_info.get("version", "")
-        build_str = ver_info.get("build_time", "")
+        ver_str = str(ver_info.get("version", "") or "").strip()
+        build_str = str(ver_info.get("build_time", "") or "").strip()
         if ver_str:
             ver_label = _get_text(T, "app.version_label") or "版本"
             ver_display = f"{ver_label}: {ver_str}"
@@ -674,7 +676,7 @@ def _render_run_history(T: dict) -> None:
         else:
             st.caption(_get_text(T, "run_tab.no_excel_hint") or "本次无可下载表格")
 
-        with st.expander("查看详情", expanded=False, key=f"run_exp_{rid}"):
+        with st.expander("查看详情", expanded=False):
             full_text = get_full_result(rec, extra_allowed_dirs=[_get_output_dir()])
             st.markdown(full_text or "*（无）*")
 
@@ -769,7 +771,7 @@ def _render_paste_mode(T: dict, defaults: dict):
                     _lines = pasted.splitlines()
                     _first = (_lines[0] if _lines else "").strip()
                     _demand_title = (_first[:20] + "…") if len(_first) > 20 else (_first or "粘贴需求")
-                    _result_str = f"## 1. 理解内容\n\n{result.get('understanding', '')}\n\n## 2. 问题点\n\n{result.get('issues', '')}\n\n## 3. 新用例表\n\n{result.get('cases_md', '')}"
+                    _result_str = f"## 1. 理解内容\n\n{str(result.get('understanding') or '')}\n\n## 2. 问题点\n\n{str(result.get('issues') or '')}\n\n## 3. 新用例表\n\n{str(result.get('cases_md') or '')}"
                     _ex_path = None
                     _txt_path = None
                     try:
@@ -924,7 +926,7 @@ def _render_upload_mode(T: dict, defaults: dict):
                         if p.get("type") in ("md", "docx"):
                             _demand_title = os.path.splitext(p.get("name", ""))[0] or _demand_title
                             break
-                    _result_str = f"## 1. 理解内容\n\n{result.get('understanding', '')}\n\n## 2. 问题点\n\n{result.get('issues', '')}\n\n## 3. 新用例表\n\n{result.get('cases_md', '')}"
+                    _result_str = f"## 1. 理解内容\n\n{str(result.get('understanding') or '')}\n\n## 2. 问题点\n\n{str(result.get('issues') or '')}\n\n## 3. 新用例表\n\n{str(result.get('cases_md') or '')}"
                     _ex_path = None
                     _txt_path = None
                     try:
@@ -1659,12 +1661,13 @@ def _render_module_settings(T: dict, defaults: dict):
             st.rerun()
 
     ver_info = _load_version()
-    ver_str = ver_info.get("version", "").strip()
+    ver_str = str(ver_info.get("version", "") or "").strip()
     if ver_str:
         ver_label = _get_text(T, "app.version_label") or "版本"
         ver_display = f"{ver_label}: {ver_str}"
-        if ver_info.get("build_time", "").strip():
-            ver_display += f" ({ver_info['build_time'].strip()})"
+        build_str = str(ver_info.get("build_time", "") or "").strip()
+        if build_str:
+            ver_display += f" ({build_str})"
         st.divider()
         st.caption(ver_display)
 
