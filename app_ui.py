@@ -48,6 +48,7 @@ DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
 STABLE_QUIP_BATCH_PATH = os.path.join(CONFIG_DIR, "stable_quip_batch.json")
 MODELS_CONFIG_PATH = os.path.join(CONFIG_DIR, "models.yaml")
 WORKBENCH_APPS_PATH = os.path.join(CONFIG_DIR, "workbench_apps.yaml")
+VERSION_PATH = os.path.join(CONFIG_DIR, "version.yaml")
 LOCAL_WORKSPACE_PATH = os.path.join(CONFIG_DIR, "local_workspace.yaml")
 OUTPUT_DIR = "output"
 LAST_RUN_JSON = os.path.join(OUTPUT_DIR, "last_run.json")
@@ -201,6 +202,19 @@ def _load_models() -> tuple[list[tuple[str, str]], str]:
         ("gemini-2.5-flash-lite", "2.5 Flash-Lite（免费额度较高）"),
         ("gemini-2.5-flash", "2.5 Flash（付费/免费皆可）"),
     ], "gemini-2.5-flash-lite"
+
+
+def _load_version() -> dict:
+    """从 config/version.yaml 读取版本号，用于验证线上代码已成功更新。"""
+    try:
+        import yaml
+        if os.path.isfile(VERSION_PATH):
+            with open(VERSION_PATH, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+                return {"version": data.get("version", ""), "build_time": data.get("build_time", "")}
+    except Exception:
+        pass
+    return {"version": "", "build_time": ""}
 
 
 def _load_workbench_apps(T: dict) -> list[dict]:
@@ -499,6 +513,16 @@ def _render_main_app(T: dict, cookies=None):
                     st.session_state["current_page"] = module_id
                     st.rerun()
         st.divider()
+        # 版本号：便于验证线上代码已成功更新
+        ver_info = _load_version()
+        ver_str = ver_info.get("version", "")
+        build_str = ver_info.get("build_time", "")
+        if ver_str:
+            ver_label = _get_text(T, "app.version_label") or "版本"
+            ver_display = f"{ver_label}: {ver_str}"
+            if build_str:
+                ver_display += f" ({build_str})"
+            st.caption(ver_display)
 
     # 主区内容
     current_page = st.session_state["current_page"]
@@ -1520,6 +1544,16 @@ def _render_module_settings(T: dict, defaults: dict):
             mode = _save_defaults(quip_token or "", gemini_key or "", gemini_model)
             st.success((_get_text(T, "run_tab.save_success") or "已保存到本地") + f"（{mode}）")
             st.rerun()
+
+    ver_info = _load_version()
+    ver_str = ver_info.get("version", "").strip()
+    if ver_str:
+        ver_label = _get_text(T, "app.version_label") or "版本"
+        ver_display = f"{ver_label}: {ver_str}"
+        if ver_info.get("build_time", "").strip():
+            ver_display += f" ({ver_info['build_time'].strip()})"
+        st.divider()
+        st.caption(ver_display)
 
 
 def main():
