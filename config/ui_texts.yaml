@@ -23,8 +23,8 @@ common:
   save_no_change: "内容未变更，无需保存"
 
 app:
-  title: "用例工坊 · AI 测试协作平台"
-  page_title: "用例工坊 · AI 测试协作平台"
+  title: "gongfang · AI 测试协作平台"
+  page_title: "gongfang · AI 测试协作平台"
   slogan: "需求即输入，用例即输出，AI 全程协同一键生成"
   version_label: "版本"
   settings: "设置"

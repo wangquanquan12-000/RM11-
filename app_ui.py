@@ -439,7 +439,7 @@ def _get_text(data: dict, path: str, default: str = "") -> str:
 
 def _render_main_app(T: dict, cookies=None):
     """主应用：侧栏导航 + 主区内容。"""
-    app_title = _get_text(T, "app.title") or "用例工坊 · AI 测试协作平台"
+    app_title = _get_text(T, "app.title") or "gongfang · AI 测试协作平台"
     defaults = _load_defaults()
     workbench_apps = _load_workbench_apps(T)
 
@@ -1822,7 +1822,7 @@ def _render_module_settings(T: dict, defaults: dict):
 def main():
     """入口：直接进入主应用。"""
     T = _load_ui_texts()
-    page_title = _get_text(T, "app.page_title") or "用例工坊 · AI 测试协作平台"
+    page_title = _get_text(T, "app.page_title") or "gongfang · AI 测试协作平台"
     st.set_page_config(page_title=page_title, layout="wide", initial_sidebar_state="expanded")
     _render_main_app(T)
 
