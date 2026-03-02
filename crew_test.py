@@ -108,14 +108,20 @@ def is_product_requirement_doc(title: str, content: str) -> tuple[bool, str]:
 
 
 def load_agents_config(path: str | None = None) -> dict[str, Any]:
-    """从 YAML 加载 Agent 与 Task 定义。若 path 为空则使用 AGENTS_CONFIG_PATH；若文件不存在或 yaml 未安装则返回空 dict。"""
+    """从 YAML 加载 Agent 与 Task 定义。
+    - 若 path 为空则使用 AGENTS_CONFIG_PATH；
+    - 若文件不存在、PyYAML 未安装或解析失败则返回空 dict（由上层做友好提示）。"""
     if yaml is None:
         return {}
     p = path or AGENTS_CONFIG_PATH
     if not os.path.isfile(p):
         return {}
-    with open(p, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        # 解析失败时让调用方展示“未找到或解析失败，可在此编辑并保存”等友好提示
+        return {}
 
 
 def _build_crew_from_config(
