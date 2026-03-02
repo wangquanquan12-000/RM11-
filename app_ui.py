@@ -851,6 +851,55 @@ def _render_module_memory(T: dict, defaults: dict):
     st.subheader(_get_text(T, "memory_tab.section_title") or "项目记忆")
     st.caption(_get_text(T, "memory_tab.caption_browse") or "导入的需求文档供 Agent 参考；先搜索查看已有内容，再按需导入。")
 
+    # Agent 知识库区块
+    try:
+        from agent_knowledge_service import (
+            build_agent_knowledge,
+            get_last_updated,
+            is_knowledge_stale,
+        )
+        kb_section = _get_text(T, "memory_tab.knowledge_section") or "Agent 知识库"
+        st.markdown(f"**{kb_section}**")
+        last_updated = get_last_updated()
+        last_text = (
+            (_get_text(T, "memory_tab.knowledge_last_updated") or "知识库最后更新时间：{time}").replace("{time}", last_updated)
+            if last_updated
+            else (_get_text(T, "memory_tab.knowledge_not_generated") or "尚未生成")
+        )
+        st.caption(last_text)
+
+        # 自动更新：进入页面且知识库过期时触发一次
+        auto_done_key = _get_module_state_key(MODULE_MEMORY, "kb_auto_done")
+        if is_knowledge_stale() and not st.session_state.get(auto_done_key, False):
+            st.session_state[auto_done_key] = True
+            refresh_label = _get_text(T, "memory_tab.knowledge_auto_updating") or "知识库已过期，正在自动更新…"
+            with st.spinner(refresh_label):
+                ok, err = build_agent_knowledge(
+                    gemini_key=defaults.get("gemini_key", ""),
+                    gemini_model=defaults.get("gemini_model", ""),
+                )
+                if ok:
+                    st.rerun()
+                # 失败则静默，不阻塞
+        elif is_knowledge_stale():
+            st.info(_get_text(T, "memory_tab.knowledge_stale_warning") or "知识库已超过 7 天未更新，建议点击【刷新知识库】或等待自动更新。")
+
+        if st.button(_get_text(T, "memory_tab.knowledge_refresh_btn") or "刷新知识库", key="kb_refresh"):
+            with st.spinner(_get_text(T, "memory_tab.knowledge_auto_updating") or "知识库已过期，正在自动更新…"):
+                ok, err = build_agent_knowledge(
+                    gemini_key=defaults.get("gemini_key", ""),
+                    gemini_model=defaults.get("gemini_model", ""),
+                )
+                if ok:
+                    st.success(_get_text(T, "memory_tab.knowledge_refresh_success") or "知识库已更新")
+                    st.rerun()
+                else:
+                    fail_tpl = _get_text(T, "memory_tab.knowledge_refresh_fail") or "更新失败：{err}"
+                    st.error(fail_tpl.replace("{err}", err))
+        st.divider()
+    except ImportError:
+        pass
+
     st.markdown("**搜索**")
     kw = st.text_input(
         _get_text(T, "memory_tab.search_label") or "搜索",

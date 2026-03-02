@@ -1102,10 +1102,17 @@ def load_project_memory(path: str | None = None) -> str:
 
 
 def get_project_context_for_agent(include_store: bool = True) -> str:
-    """获取供 Agent 使用的项目上下文：md 文件 + 记忆库近期记录。"""
+    """获取供 Agent 使用的项目上下文：知识库存在时用 project_memory + agent_knowledge，否则沿用原逻辑。"""
     md_ctx = load_project_memory()
     if not include_store:
         return md_ctx
+    try:
+        from agent_knowledge_service import load_agent_knowledge
+        kb = load_agent_knowledge()
+        if kb:
+            return (md_ctx + "\n\n【Agent 知识库】\n\n" + kb).strip() if md_ctx else kb
+    except ImportError:
+        pass
     try:
         from memory_store import get_recent_for_agent
         store_ctx = get_recent_for_agent(limit=10, demand_only=True, include_test_cases=True)

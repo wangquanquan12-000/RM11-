@@ -90,6 +90,14 @@ agents_tab:
 
 memory_tab:
   section_title: "项目记忆"
+  knowledge_section: "Agent 知识库"
+  knowledge_last_updated: "知识库最后更新时间：{time}"
+  knowledge_not_generated: "尚未生成"
+  knowledge_refresh_btn: "刷新知识库"
+  knowledge_stale_warning: "知识库已超过 7 天未更新，建议点击【刷新知识库】或等待自动更新。"
+  knowledge_auto_updating: "知识库已过期，正在自动更新…"
+  knowledge_refresh_success: "知识库已更新"
+  knowledge_refresh_fail: "更新失败：{err}"
   search_label: "搜索"
   search_placeholder: "输入关键词（如：直播、禁言、AB test）"
   search_first: "输入关键词搜索，或从下方导入后再搜。"
