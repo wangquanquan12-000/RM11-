@@ -26,6 +26,7 @@ app:
   settings: "设置"
   empty_state_hint: "暂无生成记录，输入链接开始第一次"
   try_example: "试试示例"
+  back_btn: "← 返回"
 
 tabs:
   run: "生成用例"
@@ -34,6 +35,7 @@ tabs:
   chat: "文档问答"
 
 run_tab:
+  go_settings: "去设置"
   page_caption: "从 Quip 需求文档生成测试用例，支持导出 Excel / Quip / Google 表格。"
   quip_url_label: "需求文档链接"
   quip_url_placeholder: "粘贴 Quip 文档链接或 thread_id"
@@ -74,6 +76,7 @@ run_tab:
   quip_doc_label: "打开 Quip 文档"
   google_sheets_label: "打开 Google 表格"
   result_saved: "完整结果已保存"
+  retry_btn: "重试"
   auto_archive_label: "生成后自动归档到全回归用例"
   auto_archive_help: "将本次生成的新用例追加到项目记忆中的全回归用例，供下次生成时参考。"
 
@@ -105,6 +108,17 @@ memory_tab:
   test_cases_import_btn: "导入测试用例"
   memory_summary_section: "项目记忆摘要（高级）"
   memory_text_label: "内容"
+  import_spinner_quip: "拉取中…"
+  import_spinner_file: "解析文件中…"
+  quip_token_required: "请填写上方 Quip Token"
+  quip_url_required: "请填写 Quip 文档链接"
+  file_empty: "文件内容为空"
+  parse_fail: "解析失败"
+  import_required: "请上传文件或粘贴内容"
+  save_summary_btn: "保存摘要"
+  append_from_run_btn: "从本次运行追加"
+  run_first_hint: "请先在「生成用例」页运行一次"
+  full_regression_status: "全回归用例已导入（{count} 字），生成用例时 Agent 将参考理解。"
 
 chat_tab:
   section_title: "文档问答"
