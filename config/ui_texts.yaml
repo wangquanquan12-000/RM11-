@@ -37,6 +37,9 @@ tabs:
 run_tab:
   go_settings: "去设置"
   page_caption: "从 Quip 需求文档生成测试用例，支持导出 Excel / Quip / Google 表格。"
+  step_1: "① 需求输入"
+  step_2: "② 配置与导出"
+  step_3: "③ 执行"
   quip_url_label: "需求文档链接"
   quip_url_placeholder: "粘贴 Quip 文档链接或 thread_id"
   quip_url_hint: "示例：https://quip.com/xxx 或 12 位 thread_id"
@@ -119,6 +122,11 @@ memory_tab:
   append_from_run_btn: "从本次运行追加"
   run_first_hint: "请先在「生成用例」页运行一次"
   full_regression_status: "全回归用例已导入（{count} 字），生成用例时 Agent 将参考理解。"
+  import_history_section: "导入历史"
+  agent_summary_label: "Agent 摘要"
+  agent_summary_pending: "生成中…"
+  agent_summary_failed: "摘要生成失败"
+  agent_summary_retry_btn: "重试"
 
 chat_tab:
   section_title: "文档问答"

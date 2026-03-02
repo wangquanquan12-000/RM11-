@@ -37,6 +37,12 @@ def _ensure_tables(conn):
             summary TEXT
         )
     """)
+    for col in ("agent_summary", "agent_summary_status"):
+        try:
+            conn.execute(f"ALTER TABLE memory_entries ADD COLUMN {col} TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # 列已存在
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_created ON memory_entries(created_at DESC)"
     )
@@ -67,7 +73,8 @@ def add_entry(
         ).fetchone()
         if existing:
             conn.execute(
-                """UPDATE memory_entries SET created_at=?, title=?, content=?, summary=?
+                """UPDATE memory_entries SET created_at=?, title=?, content=?, summary=?,
+                   agent_summary='', agent_summary_status='pending'
                    WHERE source_type=? AND source_id=?""",
                 (now, title or "", content, summary or "", source_type, sid),
             )
@@ -151,15 +158,47 @@ def list_recent(limit: int = 50) -> list[dict[str, Any]]:
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    return {
-        "id": row["id"],
-        "created_at": row["created_at"],
-        "source_type": row["source_type"],
-        "source_id": row["source_id"],
-        "title": row["title"],
-        "content": row["content"],
-        "summary": row["summary"],
-    }
+    d = dict(row)
+    d.setdefault("agent_summary", "")
+    d.setdefault("agent_summary_status", "pending")
+    return d
+
+
+def update_agent_summary(entry_id: int, summary: str, status: str) -> bool:
+    """更新条目的 Agent 摘要。status: 'success' | 'failed'"""
+    conn = _get_conn()
+    _ensure_tables(conn)
+    cur = conn.execute(
+        "UPDATE memory_entries SET agent_summary=?, agent_summary_status=? WHERE id=?",
+        (summary or "", status, entry_id),
+    )
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
+
+
+def list_import_history(limit: int = 20) -> list[dict[str, Any]]:
+    """导入历史：按时间倒序，含 agent_summary、agent_summary_status。"""
+    conn = _get_conn()
+    _ensure_tables(conn)
+    try:
+        rows = conn.execute(
+            """SELECT id, created_at, source_type, source_id, title, content, summary,
+                      COALESCE(agent_summary,'') as agent_summary,
+                      COALESCE(agent_summary_status,'pending') as agent_summary_status
+               FROM memory_entries
+               ORDER BY created_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = conn.execute(
+            """SELECT id, created_at, source_type, source_id, title, content, summary
+               FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    conn.close()
+    return [_row_to_dict(r) for r in rows]
 
 
 def get_recent_for_agent(

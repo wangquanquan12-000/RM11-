@@ -29,7 +29,16 @@ from crew_test import (
     tables_to_text,
     update_project_memory,
 )
-from memory_store import TEST_CASES_SOURCE_TYPE, add_entry, delete_entry, get_entry_content, list_recent, search
+from memory_store import (
+    TEST_CASES_SOURCE_TYPE,
+    add_entry,
+    delete_entry,
+    get_entry_content,
+    list_import_history,
+    list_recent,
+    search,
+    update_agent_summary,
+)
 
 CONFIG_DIR = os.path.dirname(AGENTS_CONFIG_PATH)
 DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
@@ -44,6 +53,33 @@ MODULE_AGENTS = "agents"
 MODULE_MEMORY = "memory"
 MODULE_CHAT = "chat"
 MODULE_SETTINGS = "settings"
+
+SUMMARY_PROMPT = "请用 200 字以内总结以下文档的核心要点与测试相关风险。"
+
+
+def _generate_entry_summary(entry_id: int, content: str, gemini_key: str = "") -> tuple[bool, str]:
+    """调用 Gemini 生成条目摘要。返回 (是否成功, 失败时的错误信息)。"""
+    if not (content or "").strip():
+        return False, "内容为空"
+    text = (content or "").strip()[:8000]
+    key = (gemini_key or "").strip() or os.environ.get("GEMINI_API_KEY", "")
+    if not key:
+        update_agent_summary(entry_id, "", "failed")
+        return False, "未配置 Gemini API Key"
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        llm = ChatGoogleGenerativeAI(model=model, google_api_key=key, temperature=0.2)
+        msg = llm.invoke(f"{SUMMARY_PROMPT}\n\n---\n\n{text}")
+        summary = (msg.content or "").strip()
+        if summary:
+            update_agent_summary(entry_id, summary, "success")
+            return True, ""
+    except Exception as ex:
+        update_agent_summary(entry_id, "", "failed")
+        return False, str(ex)
+    update_agent_summary(entry_id, "", "failed")
+    return False, "生成为空"
 
 
 def _load_stable_quip_batch():
@@ -299,9 +335,19 @@ def _render_main_app(T: dict, cookies=None):
         background: var(--color-bg-card); box-shadow: 0 1px 3px rgba(0,0,0,0.08);
     }
     div[data-testid="stExpander"] > div:first-child { border-radius: var(--radius-card); }
-    .stButton > button { border-radius: var(--radius-button) !important; font-weight: 500 !important; transition: opacity 0.15s; }
+    .stButton > button { border-radius: var(--radius-button) !important; font-weight: 500 !important; transition: background 0.15s, color 0.15s; }
     .stButton > button:hover { opacity: 0.9; }
-    .main .stButton > button[kind="primary"] { font-weight: 600 !important; background: var(--color-primary) !important; }
+    .stButton > button[kind="primary"],
+    .main .stButton > button[kind="primary"],
+    [data-testid="stSidebar"] .stButton > button[kind="primary"] {
+        font-weight: 600 !important; background: var(--color-primary) !important;
+        color: #ffffff !important; border-color: var(--color-primary) !important;
+    }
+    .stButton > button[kind="primary"]:hover,
+    .main .stButton > button[kind="primary"]:hover,
+    [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {
+        background: var(--color-primary-dark) !important; color: #ffffff !important; opacity: 1 !important;
+    }
     .stTextInput > div > div, .stSelectbox > div { border-radius: var(--radius-card); }
     .stSuccess { border-radius: var(--radius-card); padding: 0.75rem 1rem; background: #ecfdf5; color: var(--color-success); }
     .stError { border-radius: var(--radius-card); padding: 0.75rem 1rem; color: var(--color-error); }
@@ -313,7 +359,7 @@ def _render_main_app(T: dict, cookies=None):
     .card-style { background: var(--color-bg-card); border-radius: var(--radius-card); box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 1rem; margin-bottom: 1rem; }
     #MainMenu { visibility: hidden; }
     footer { visibility: hidden; }
-    header { visibility: hidden; }
+    /* 不隐藏 header，否则会连同侧栏展开按钮一起隐藏，导致收起后无法打开 */
     </style>
     """, unsafe_allow_html=True)
 
@@ -378,12 +424,12 @@ def _render_main_app(T: dict, cookies=None):
 
 
 def _render_module_quip_to_cases(T: dict, defaults: dict):
-    """工作台模块：Quip 转用例。首屏精简：链接 + 配置折叠 + 主按钮。"""
+    """工作台模块：Quip 转用例。三步：需求输入 → 配置与导出 → 执行。"""
     st.caption(_get_text(T, "run_tab.page_caption") or "从 Quip 需求文档生成测试用例，支持导出 Excel / Quip / Google 表格。")
     st.markdown("<div style='margin-bottom:0.5rem'></div>", unsafe_allow_html=True)
 
-    # ① 需求链接（突出）
-    st.markdown('<p class="step-label">① 需求文档</p>', unsafe_allow_html=True)
+    # ① 需求输入
+    st.markdown(f'<p class="step-label">{_get_text(T, "run_tab.step_1") or "① 需求输入"}</p>', unsafe_allow_html=True)
     quip_url = st.text_input(
         _get_text(T, "run_tab.quip_url_label") or "需求文档链接",
         placeholder=_get_text(T, "run_tab.quip_url_placeholder") or "粘贴 Quip 文档链接或 thread_id",
@@ -396,7 +442,8 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
             st.session_state["run_quip_url"] = "https://quip.com/example"
             st.rerun()
 
-    # ② 配置区（可折叠：模型+导出+账号状态）
+    # ② 配置与导出
+    st.markdown(f'<p class="step-label" style="margin-top:1.25rem">{_get_text(T, "run_tab.step_2") or "② 配置与导出"}</p>', unsafe_allow_html=True)
     _has_saved = bool(defaults.get("quip_token") and defaults.get("gemini_key"))
     _exp_label = "配置（已保存 ✓）" if _has_saved else "配置（未保存，请填写）"
     with st.expander(_exp_label, expanded=not _has_saved):
@@ -437,8 +484,9 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
     quip_token = defaults.get("quip_token", "")
     gemini_key = defaults.get("gemini_key", "")
 
+    # ③ 执行
+    st.markdown(f'<p class="step-label" style="margin-top:1.25rem">{_get_text(T, "run_tab.step_3") or "③ 执行"}</p>', unsafe_allow_html=True)
     pipeline_running = st.session_state.get(_get_module_state_key(MODULE_QUIP_TO_CASES, "running"), False)
-    st.markdown("<div style='margin-top:1rem'></div>", unsafe_allow_html=True)
     run_btn_label = (_get_text(T, "run_tab.run_spinner") or "运行中…") if pipeline_running else (_get_text(T, "run_tab.run_btn") or "生成测试用例")
     if st.button(run_btn_label, type="primary", use_container_width=True, key="run_pipeline_btn", disabled=pipeline_running):
             if not quip_url or not quip_url.strip():
@@ -621,35 +669,55 @@ def _render_module_agents(T: dict):
         st.markdown("**Agent（角色）**")
         for i, a in enumerate(agents):
             with st.expander(f"Agent {i + 1}/{len(agents)}: {a.get('role', a.get('id', '未命名'))}", expanded=False):
-                a_id = st.text_input("id", value=a.get("id", ""), key=f"agent_id_{i}", help="唯一标识，Task 中通过 agent_id 引用")
-                a_role = st.text_input("role", value=a.get("role", ""), key=f"agent_role_{i}")
-                a_goal = st.text_area("goal", value=a.get("goal", ""), key=f"agent_goal_{i}", height=80)
-                a_back = st.text_area("backstory", value=(a.get("backstory") or "").strip(), key=f"agent_back_{i}", height=120)
-                a["id"], a["role"], a["goal"], a["backstory"] = a_id, a_role, a_goal, a_back
+                st.text_input("id", value=a.get("id", ""), key=f"agent_id_{i}", help="唯一标识，Task 中通过 agent_id 引用")
+                st.text_input("role", value=a.get("role", ""), key=f"agent_role_{i}")
+                st.text_area("goal", value=a.get("goal", ""), key=f"agent_goal_{i}", height=80)
+                st.text_area("backstory", value=(a.get("backstory") or "").strip(), key=f"agent_back_{i}", height=120)
         st.divider()
         st.markdown("**Task（任务）**")
         for i, t in enumerate(tasks):
             with st.expander(f"Task {i + 1}/{len(tasks)}: {t.get('id', '')} ← {t.get('agent_id', '')}", expanded=False):
-                t_id = st.text_input("id", value=t.get("id", ""), key=f"task_id_{i}")
-                t_agent_id = st.text_input("agent_id", value=t.get("agent_id", ""), key=f"task_agent_{i}", help="对应上方某 Agent 的 id")
-                t_desc = st.text_area("description", value=(t.get("description") or "").strip(), key=f"task_desc_{i}", height=100)
-                t_out = st.text_input("expected_output", value=t.get("expected_output", ""), key=f"task_out_{i}")
-                t["id"], t["agent_id"], t["description"], t["expected_output"] = t_id, t_agent_id, t_desc, t_out
+                st.text_input("id", value=t.get("id", ""), key=f"task_id_{i}")
+                st.text_input("agent_id", value=t.get("agent_id", ""), key=f"task_agent_{i}", help="对应上方某 Agent 的 id")
+                st.text_area("description", value=(t.get("description") or "").strip(), key=f"task_desc_{i}", height=100)
+                st.text_input("expected_output", value=t.get("expected_output", ""), key=f"task_out_{i}")
         _last_hash_key = _get_module_state_key(MODULE_AGENTS, "last_saved_hash")
+        _current = {"agents": [{"id": st.session_state.get(f"agent_id_{i}", a.get("id")), "role": st.session_state.get(f"agent_role_{i}", a.get("role")), "goal": st.session_state.get(f"agent_goal_{i}", a.get("goal")), "backstory": st.session_state.get(f"agent_back_{i}", a.get("backstory"))} for i, a in enumerate(agents)], "tasks": [{"id": st.session_state.get(f"task_id_{i}", t.get("id")), "agent_id": st.session_state.get(f"task_agent_{i}", t.get("agent_id")), "description": st.session_state.get(f"task_desc_{i}", t.get("description")), "expected_output": st.session_state.get(f"task_out_{i}", t.get("expected_output"))} for i, t in enumerate(tasks)]}
         if _last_hash_key not in st.session_state:
-            st.session_state[_last_hash_key] = str(config)
-        elif st.session_state[_last_hash_key] != str(config):
+            st.session_state[_last_hash_key] = str(_current)
+        elif st.session_state[_last_hash_key] != str(_current):
             st.session_state[_get_module_state_key(MODULE_AGENTS, "dirty")] = True
         if st.button(_get_text(T, "agents_tab.save_btn") or "保存配置到 config/agents.yaml", type="primary", key="agents_save_config"):
             try:
                 import yaml
+                # 保存时从 session_state 重新组装 config，避免 Streamlit 重跑时取值不符（见 docs/fix-agents-save-for-programming.md）
+                new_agents = []
+                for i in range(len(agents)):
+                    na = {k: v for k, v in agents[i].items() if k not in ("id", "role", "goal", "backstory")}
+                    na["id"] = st.session_state.get(f"agent_id_{i}", agents[i].get("id", ""))
+                    na["role"] = st.session_state.get(f"agent_role_{i}", agents[i].get("role", ""))
+                    na["goal"] = st.session_state.get(f"agent_goal_{i}", agents[i].get("goal", ""))
+                    na["backstory"] = (st.session_state.get(f"agent_back_{i}", "") or "").strip()
+                    new_agents.append(na)
+                new_tasks = []
+                for i in range(len(tasks)):
+                    nt = {k: v for k, v in tasks[i].items() if k not in ("id", "agent_id", "description", "expected_output")}
+                    nt["id"] = st.session_state.get(f"task_id_{i}", tasks[i].get("id", ""))
+                    nt["agent_id"] = st.session_state.get(f"task_agent_{i}", tasks[i].get("agent_id", ""))
+                    nt["description"] = (st.session_state.get(f"task_desc_{i}", "") or "").strip()
+                    nt["expected_output"] = st.session_state.get(f"task_out_{i}", tasks[i].get("expected_output", ""))
+                    new_tasks.append(nt)
+                to_save = {k: v for k, v in config.items() if k not in ("agents", "tasks")}
+                to_save["agents"] = new_agents
+                to_save["tasks"] = new_tasks
                 with open(AGENTS_CONFIG_PATH, "w", encoding="utf-8") as f:
-                    yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                    yaml.dump(to_save, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
                 st.session_state[_get_module_state_key(MODULE_AGENTS, "dirty")] = False
-                st.session_state[_get_module_state_key(MODULE_AGENTS, "last_saved_hash")] = str(config)
+                st.session_state[_get_module_state_key(MODULE_AGENTS, "last_saved_hash")] = str(to_save)
                 st.success("已保存，下次生成用例将使用新配置")
+                st.rerun()
             except Exception as e:
-                st.error(str(e))
+                st.error(f"保存失败：{e}")
 
 def _render_module_memory(T: dict, defaults: dict):
     """工作台模块：项目记忆。"""
@@ -690,6 +758,39 @@ def _render_module_memory(T: dict, defaults: dict):
         st.info(_get_text(T, "memory_tab.search_empty") or "未找到匹配文档。")
     else:
         st.info(_get_text(T, "memory_tab.search_first") or "输入关键词搜索，或通过下方导入后搜索。")
+
+    st.markdown("**" + (_get_text(T, "memory_tab.import_history_section") or "导入历史") + "**")
+    hist = list_import_history(limit=20)
+    if hist:
+        for e in hist:
+            status = e.get("agent_summary_status") or "pending"
+            if status == "success":
+                tag = "有摘要✓"
+            elif status == "failed":
+                tag = "失败 ✗"
+            else:
+                tag = _get_text(T, "memory_tab.agent_summary_pending") or "生成中…"
+            label = f"【{e.get('title', '') or e.get('source_id', '') or e.get('source_type', '')}】 {e.get('created_at', '')} · [{tag}]"
+            with st.expander(label, expanded=False):
+                content = e.get("content", "") or e.get("summary", "")
+                st.caption(_get_text(T, "memory_tab.agent_summary_label") or "Agent 摘要")
+                if status == "success":
+                    st.markdown(e.get("agent_summary", "") or "")
+                elif status == "failed":
+                    st.caption(_get_text(T, "memory_tab.agent_summary_failed") or "摘要生成失败")
+                    if st.button(_get_text(T, "memory_tab.agent_summary_retry_btn") or "重试", key=f"retry_summary_{e.get('id')}"):
+                        ok, err = _generate_entry_summary(e["id"], content, defaults.get("gemini_key", ""))
+                        if ok:
+                            st.rerun()
+                        else:
+                            st.error(f"摘要生成失败：{err}")
+                else:
+                    st.caption(_get_text(T, "memory_tab.agent_summary_pending") or "生成中…")
+                st.divider()
+                st.caption("导入内容")
+                st.markdown((content or "")[:2000] + ("..." if len(content or "") > 2000 else ""))
+    else:
+        st.caption("暂无导入记录，通过下方导入后此处将显示历史与 Agent 摘要。")
 
     st.divider()
     st.markdown("**导入需求**")
@@ -733,8 +834,14 @@ def _render_module_memory(T: dict, defaults: dict):
                         batch_pause=float(batch_pause),
                         progress_info={},
                     )
+                    entry_list = []
                     for d in docs:
-                        add_entry("quip_folder", d["content"], source_id=d["thread_id"], title=d["title"], summary=d["content"][:500])
+                        rowid = add_entry("quip_folder", d["content"], source_id=d["thread_id"], title=d["title"], summary=d["content"][:500])
+                        entry_list.append((rowid, d["content"]))
+                    for i, (eid, c) in enumerate(entry_list):
+                        if c and c.strip():
+                            status_text.caption(f"正在生成摘要 {i+1}/{len(entry_list)}…")
+                            _generate_entry_summary(eid, c, defaults.get("gemini_key", ""))
                     progress_bar.progress(1.0)
                     status_text.caption("")
                     _save_stable_quip_batch(stats["stable_batch_size"], stats["stable_batch_pause"])
@@ -762,8 +869,12 @@ def _render_module_memory(T: dict, defaults: dict):
                 if not keep:
                     st.warning(f"被识别为非需求文档（{reason}），已跳过。")
                 else:
-                    add_entry("quip_single", content, source_id=single_url.strip(), title=doc_title, summary=content[:500])
+                    rowid = add_entry("quip_single", content, source_id=single_url.strip(), title=doc_title, summary=content[:500])
+                    if content and content.strip():
+                        with st.spinner(_get_text(T, "memory_tab.agent_summary_pending") or "生成摘要中…"):
+                            _generate_entry_summary(rowid, content, defaults.get("gemini_key", ""))
                     st.success("已导入，可在上方搜索查看")
+                    st.rerun()
             except Exception as ex:
                 st.error(str(ex))
         else:
@@ -793,7 +904,10 @@ def _render_module_memory(T: dict, defaults: dict):
                 with st.spinner(_get_text(T, "memory_tab.import_spinner_quip") or "拉取中…"):
                     try:
                         content, doc_title = load_demand_from_quip(test_cases_quip_url.strip(), return_title=True)
-                        add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title=doc_title or "全回归测试用例", summary=content[:500])
+                        rowid = add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title=doc_title or "全回归测试用例", summary=content[:500])
+                        if content and content.strip():
+                            with st.spinner(_get_text(T, "memory_tab.agent_summary_pending") or "生成摘要中…"):
+                                _generate_entry_summary(rowid, content, defaults.get("gemini_key", ""))
                         st.success(f"已导入「{doc_title or '全回归'}」（{len(content)} 字），Agent 将参考既有用例。")
                         st.rerun()
                     except Exception as ex:
@@ -832,14 +946,18 @@ def _render_module_memory(T: dict, defaults: dict):
                     if not content.strip():
                         st.warning(_get_text(T, "memory_tab.file_empty") or "文件内容为空")
                     else:
-                        add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title="全回归测试用例", summary=content[:500])
+                        rowid = add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title="全回归测试用例", summary=content[:500])
+                        with st.spinner(_get_text(T, "memory_tab.agent_summary_pending") or "生成摘要中…"):
+                            _generate_entry_summary(rowid, content, defaults.get("gemini_key", ""))
                         st.success(f"已导入 {rows} 行（{len(content)} 字），Agent 将参考既有用例。")
                         st.rerun()
                 except Exception as ex:
                     st.error(f"{_get_text(T, 'memory_tab.parse_fail') or '解析失败'}: {ex}")
         elif test_cases_paste and test_cases_paste.strip():
             content = test_cases_paste.strip()
-            add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title="全回归测试用例", summary=content[:500])
+            rowid = add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title="全回归测试用例", summary=content[:500])
+            with st.spinner(_get_text(T, "memory_tab.agent_summary_pending") or "生成摘要中…"):
+                _generate_entry_summary(rowid, content, defaults.get("gemini_key", ""))
             st.success(f"已导入（{len(content)} 字），Agent 将参考既有用例。")
             st.rerun()
         else:
