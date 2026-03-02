@@ -751,16 +751,16 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
 
 
 def _render_upload_mode(T: dict, defaults: dict):
-    """文件上传模式：上传 .md + .xlsx → 解析 → 四 Agent → 三块结果 + Excel 下载。
+    """文件上传模式：上传 .md / .docx（需求文档）+ .xlsx（既有用例）→ 解析 → 四 Agent → 三块结果 + Excel 下载。
     仅 Excel 下载，不配置导出路径、Quip、Sheets。"""
-    st.caption("支持多个 .md（需求文档）和 .xlsx（既有测试用例），可混合选择。至少需 1 个 .md。")
+    st.caption("支持 .md / .docx（需求文档）和 .xlsx（既有测试用例），可混合选择。至少需 1 个需求文档。")
 
     uploaded = st.file_uploader(
         "上传需求文档与既有用例",
-        type=["md", "xlsx"],
+        type=["md", "docx", "xlsx"],
         accept_multiple_files=True,
         key="run_upload_files",
-        help="支持多个 .md 和 .xlsx，可混合选择；单文件 &lt; 10MB，总 &lt; 50MB",
+        help="支持 .md、.docx（Word）、.xlsx，可混合选择；单文件 &lt; 10MB，总 &lt; 50MB",
     )
 
     demand_md = ""
@@ -775,14 +775,14 @@ def _render_upload_mode(T: dict, defaults: dict):
         else:
             for p in preview_infos:
                 name = p.get("name", "")
-                if p.get("type") == "md":
+                if p.get("type") in ("md", "docx"):
                     prev = p.get("preview", "")[:200]
                     st.caption(f"📄 {name} — {prev}…" if len(str(p.get("preview", ""))) > 200 else f"📄 {name} — {prev}")
                 else:
                     st.caption(f"📊 {name} — {p.get('rows', 0)} 行")
 
     if not demand_md and uploaded:
-        st.warning("至少需上传 1 个 .md 需求文档；或文件类型/大小不符要求。")
+        st.warning("至少需上传 1 个需求文档（.md 或 .docx）；或文件类型/大小不符要求。")
 
     gemini_models_list, default_model = _load_models()
     _model_opts = [m[0] for m in gemini_models_list]
@@ -805,7 +805,7 @@ def _render_upload_mode(T: dict, defaults: dict):
     run_label = "运行中…" if pipeline_running else "开始生成"
     if st.button(run_label, type="primary", use_container_width=True, key="run_upload_btn", disabled=pipeline_running):
         if not demand_md:
-            st.error("请至少上传 1 个 .md 需求文档")
+            st.error("请至少上传 1 个需求文档（.md 或 .docx）")
         elif not defaults.get("gemini_key"):
             st.error("请先在「设置」中配置 Gemini API Key")
         else:
@@ -847,7 +847,7 @@ def _render_upload_mode(T: dict, defaults: dict):
 
     r = st.session_state.get(_upload_result_key)
     if not r:
-        st.info("上传文件后点击「开始生成」。结果将分为：理解内容、问题点、新用例表；支持下载 Excel。")
+        st.info("上传 .md/.docx 需求文档或 .xlsx 既有用例后点击「开始生成」。结果将分为：理解内容、问题点、新用例表；支持下载 Excel。")
         return
 
     st.divider()

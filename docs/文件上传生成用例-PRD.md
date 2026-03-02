@@ -57,8 +57,8 @@
 
 | 项目 | 说明 |
 |------|------|
-| 多文件上传 | `st.file_uploader(..., accept_multiple_files=True)`，类型为 `.md` 和 `.xlsx` |
-| 解析逻辑 | .md 按 utf-8 读文本；.xlsx 用 openpyxl 读表格内容（已有实现可复用） |
+| 多文件上传 | `st.file_uploader(..., accept_multiple_files=True)`，类型为 `.md`、`.docx` 和 `.xlsx` |
+| 解析逻辑 | .md 按 utf-8 读文本；.docx 用 python-docx 提取段落与表格；.xlsx 用 openpyxl 读表格内容 |
 | 分析产出 | 理解内容（文档/既有用例摘要）+ 问题点（风险、遗漏、矛盾等） |
 | 用例生成 | 复用现有四 Agent 流水线，基于合并后的需求 + 既有用例上下文 |
 | Excel 下载 | 仅 `st.download_button` 下载新用例表，不写文件到磁盘 |
@@ -69,7 +69,7 @@
 |------|------|
 | 导出路径配置 | 不提供工作目录、导出路径等配置 |
 | Quip / Google Sheets 导出 | 本功能仅支持 Excel 下载 |
-| Word(.docx) | 不支持，仅 .md + .xlsx |
+| Word(.docx) | ✅ 已支持，与 .md 同为需求文档 |
 | 目录扫描 | 不提供本地目录选择，仅上传 |
 
 ---

@@ -982,11 +982,33 @@ _MAX_SINGLE_FILE_BYTES = 10 * 1024 * 1024  # 10MB
 _MAX_TOTAL_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB
 
 
+def _extract_text_from_docx(raw: bytes) -> str:
+    """从 Word(.docx) 字节流提取纯文本。需 python-docx。"""
+    try:
+        from docx import Document
+        from io import BytesIO
+        doc = Document(BytesIO(raw))
+        paras = []
+        for p in doc.paragraphs:
+            if p.text.strip():
+                paras.append(p.text)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                if any(cells):
+                    paras.append(" | ".join(cells))
+        return "\n".join(paras).strip()
+    except ImportError:
+        return ""
+    except Exception:
+        return ""
+
+
 def parse_uploaded_files(uploaded_files: list) -> tuple[str, str, list[dict[str, Any]]]:
-    """解析上传的 .md 与 .xlsx 文件，供「文件上传生成用例」使用。
+    """解析上传的 .md、.docx（需求文档）与 .xlsx（既有用例）文件，供「文件上传生成用例」使用。
     返回 (需求文档合并文本, 既有用例合并文本, 预览信息列表)。
-    需至少 1 个 .md；.xlsx 可选。"""
-    md_parts: list[str] = []
+    需至少 1 个需求文档（.md 或 .docx）；.xlsx 可选。"""
+    demand_parts: list[str] = []
     xlsx_parts: list[str] = []
     preview_infos: list[dict[str, Any]] = []
     total_bytes = 0
@@ -994,7 +1016,7 @@ def parse_uploaded_files(uploaded_files: list) -> tuple[str, str, list[dict[str,
     for f in uploaded_files or []:
         name = (getattr(f, "name", "") or "").strip()
         ext = name.lower().rsplit(".", 1)[-1] if "." in name else ""
-        if ext not in ("md", "xlsx"):
+        if ext not in ("md", "docx", "xlsx"):
             continue
 
         try:
@@ -1013,8 +1035,12 @@ def parse_uploaded_files(uploaded_files: list) -> tuple[str, str, list[dict[str,
 
         if ext == "md":
             text = raw.decode("utf-8-sig", errors="replace").strip()
-            md_parts.append(text)
+            demand_parts.append(text)
             preview_infos.append({"name": name, "type": "md", "preview": (text[:200] + "…") if len(text) > 200 else text})
+        elif ext == "docx":
+            text = _extract_text_from_docx(raw)
+            demand_parts.append(text)
+            preview_infos.append({"name": name, "type": "docx", "preview": (text[:200] + "…") if len(text) > 200 else text})
         else:  # xlsx
             from io import BytesIO
             _wrapper = BytesIO(raw)
@@ -1023,9 +1049,9 @@ def parse_uploaded_files(uploaded_files: list) -> tuple[str, str, list[dict[str,
             xlsx_parts.append(content)
             preview_infos.append({"name": name, "type": "xlsx", "rows": rows})
 
-    demand_md = "\n\n---\n\n".join(md_parts) if md_parts else ""
+    demand_merged = "\n\n---\n\n".join(demand_parts) if demand_parts else ""
     existing_cases = "\n\n".join(xlsx_parts) if xlsx_parts else ""
-    return demand_md, existing_cases, preview_infos
+    return demand_merged, existing_cases, preview_infos
 
 
 def tables_to_text(tables: list[list[list[str]]]) -> str:
