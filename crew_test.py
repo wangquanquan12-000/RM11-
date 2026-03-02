@@ -1065,23 +1065,43 @@ def tables_to_text(tables: list[list[list[str]]]) -> str:
     return "\n".join(lines).strip()
 
 
+def _normalize_table_line(line: str) -> str | None:
+    """将疑似表格行规范为 |...| 格式，便于 _parse_markdown_tables 解析。
+    若行内含 2 个以上 | 且像表格行，则补全首尾 |；否则返回 None。"""
+    s = line.strip()
+    if not s or s.count("|") < 2:
+        return None
+    if not s.startswith("|"):
+        s = "| " + s
+    if not s.endswith("|"):
+        s = s + " |"
+    return s
+
+
 def _parse_markdown_tables(text: str) -> list[list[list[str]]]:
-    """从文本中解析所有 Markdown 表格，返回 [表格1行列表, 表格2行列表, ...]，每表为 [row1, row2, ...]，每行为 [cell, ...]。"""
+    """从文本中解析所有 Markdown 表格，返回 [表格1行列表, 表格2行列表, ...]，每表为 [row1, row2, ...]，每行为 [cell, ...]。
+    支持稍宽松的表格格式（如缺少首尾 | 的管道符行），以兼容 LLM 输出差异。"""
     tables = []
     lines = text.split("\n")
     i = 0
     while i < len(lines):
-        line = lines[i]
-        if not line.strip().startswith("|") or not line.strip().endswith("|"):
+        raw = lines[i]
+        line = _normalize_table_line(raw) or raw.strip()
+        if not line.startswith("|") or not line.endswith("|"):
             i += 1
             continue
         rows = []
-        while i < len(lines) and lines[i].strip().startswith("|") and lines[i].strip().endswith("|"):
+        while i < len(lines):
             raw = lines[i]
-            if re.match(r"^\s*\|[\s\-:]+\|\s*$", raw):
+            normalized = _normalize_table_line(raw)
+            line = normalized if normalized else raw.strip()
+            if not line.startswith("|") or not line.endswith("|"):
+                break
+            if re.match(r"^\s*\|[\s\-:]+\|\s*$", line):
                 i += 1
                 continue
-            cells = [c.strip() for c in raw.split("|")[1:-1]]
+            parts = line.split("|")
+            cells = [c.strip() for c in parts[1:-1]]
             if cells:
                 rows.append(cells)
             i += 1

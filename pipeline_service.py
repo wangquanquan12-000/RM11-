@@ -267,7 +267,11 @@ def run_upload_to_cases(
         elif tid == "task3":
             cases_md = content
 
-    tables = _parse_markdown_tables(cases_md or out.get("result_str", ""))
+    # 优先从 task3（用例表）解析表格；若无则从 result_str（通常为 task4 输出，可能含修正后表格）尝试
+    result_str = (out.get("result_str") or "").strip()
+    tables = _parse_markdown_tables(cases_md) if (cases_md or "").strip() else []
+    if not tables and result_str:
+        tables = _parse_markdown_tables(result_str)
     excel_bytes = export_tables_to_excel_bytes(tables) if tables else None
 
     return {
