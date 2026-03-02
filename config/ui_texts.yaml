@@ -1,6 +1,6 @@
 # 网页文案配置 - 在此编辑即可生效，无需改代码
 # 修改后刷新页面即可看到效果
-
+---
 auth:
   page_title: "登录 | 需求 → 测试用例"
   login_tab: "登录"
@@ -26,6 +26,7 @@ app:
   title: "用例工坊 · AI 测试协作平台"
   page_title: "用例工坊 · AI 测试协作平台"
   slogan: "需求即输入，用例即输出，AI 全程协同一键生成"
+  version_label: "版本"
   settings: "设置"
   empty_state_hint: "暂无生成记录，输入链接开始第一次"
   try_example: "试试示例"
