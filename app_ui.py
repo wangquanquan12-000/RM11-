@@ -839,6 +839,10 @@ def _render_paste_mode(T: dict, defaults: dict):
         help="可选；上传后作为 Agent 上下文",
     )
 
+    _paste_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "paste_running")
+    _paste_result_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "paste_last_run")
+    _paste_error_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "paste_last_error")
+
     # 用户主动清空时才重置缓存，满足 F6-2 约束
     if st.button("清空文本与附件", key="run_paste_reset"):
         st.session_state["run_paste_content"] = ""
@@ -856,7 +860,10 @@ def _render_paste_mode(T: dict, defaults: dict):
 
     gemini_models_list, default_model = _load_models()
     _model_opts = [m[0] for m in gemini_models_list]
-    _model_idx = next((i for i, (k, _) in enumerate(gemini_models_list) if k == (defaults.get("gemini_model") or default_model)), 0)
+    _model_idx = next(
+        (i for i, (k, _) in enumerate(gemini_models_list) if k == (defaults.get("gemini_model") or default_model)),
+        0,
+    )
     with st.expander("模型配置", expanded=not bool(defaults.get("gemini_key"))):
         gemini_model = st.selectbox(
             "Gemini 模型",
@@ -865,10 +872,6 @@ def _render_paste_mode(T: dict, defaults: dict):
             format_func=lambda x: dict(gemini_models_list).get(x, x),
             key="run_paste_model",
         )
-
-    _paste_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "paste_running")
-    _paste_result_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "paste_last_run")
-    _paste_error_key = _get_module_state_key(MODULE_QUIP_TO_CASES, "paste_last_error")
 
     pipeline_running = st.session_state.get(_paste_key, False)
     run_label = "运行中…" if pipeline_running else "开始生成"

@@ -1087,8 +1087,11 @@ def _normalize_table_line(line: str) -> str | None:
 def _parse_markdown_tables(text: str) -> list[list[list[str]]]:
     """从文本中解析所有 Markdown 表格，返回 [表格1行列表, 表格2行列表, ...]，每表为 [row1, row2, ...]，每行为 [cell, ...]。
     支持稍宽松的表格格式（如缺少首尾 | 的管道符行），以兼容 LLM 输出差异。"""
-    tables = []
-    lines = text.split("\n")
+    # 兼容全角竖线等常见变体，避免因字符集差异导致表格无法识别
+    normalized_text = text.replace("｜", "|")
+
+    tables: list[list[list[str]]] = []
+    lines = normalized_text.split("\n")
     i = 0
     while i < len(lines):
         raw = lines[i]
