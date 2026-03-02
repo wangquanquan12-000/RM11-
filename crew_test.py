@@ -186,6 +186,19 @@ def _html_to_plain(html_str: str) -> str:
     return text.strip()
 
 
+def desensitize_for_llm(text: str) -> str:
+    """对传给大模型的文本做基础脱敏处理，掩盖明显的账号、邮箱等敏感信息。
+    规则可后续通过配置扩展，这里实现一版保守的默认策略。"""
+    if not text:
+        return ""
+    out = str(text)
+    # 掩盖邮箱
+    out = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[EMAIL_MASKED]", out)
+    # 掩盖连续 16 位及以上数字（如可能的卡号）
+    out = re.sub(r"\b\d{16,}\b", "[NUMBER_MASKED]", out)
+    return out
+
+
 def _extract_quip_id_from_url(value: str) -> str:
     """从 Quip URL 提取 id（第一个路径段）。如 https://wegrowth.quip.com/0lXLAKptNvz1/goalPoll → 0lXLAKptNvz1"""
     value = value.strip()
@@ -791,7 +804,9 @@ def chat_with_document_agent(
         )
 
     proj_ctx = f"\n\n【项目背景】\n{project_context}" if project_context and project_context.strip() else ""
-    doc_preview = document_context[:60000] + ("..." if len(document_context) > 60000 else "")
+    # 入参脱敏：对文档内容做掩码后再传给 Agent，避免直接暴露敏感信息
+    safe_doc = desensitize_for_llm(document_context)
+    doc_preview = safe_doc[:60000] + ("..." if len(safe_doc) > 60000 else "")
 
     task = Task(
         description="""你是一位产品文档管理专家。用户会向你提问，你需要基于下方提供的【需求文档】内容回答。
@@ -900,6 +915,16 @@ def _parse_markdown_tables(text: str) -> list[list[list[str]]]:
     return tables
 
 
+def _sanitize_cell_for_excel(value: Any) -> str:
+    """防止 Excel 公式注入：以 = + - @ 开头的内容前置单引号。
+    仅用于导出到 Excel/CSV 等外部文件，对内存中的原始内容不做修改。"""
+    s = "" if value is None else str(value)
+    s = s.strip()
+    if s and s[0] in ("=", "+", "-", "@"):
+        return "'" + s
+    return s
+
+
 def _export_to_excel(tables: list[list[list[str]]], excel_path: str) -> bool:
     """将解析出的表格写入 Excel，若有多个表则合并为同一 sheet（按顺序拼接）。返回是否成功。"""
     try:
@@ -915,7 +940,8 @@ def _export_to_excel(tables: list[list[list[str]]], excel_path: str) -> bool:
         for r in tbl:
             row_num += 1
             for col_num, cell in enumerate(r, 1):
-                ws.cell(row=row_num, column=col_num, value=cell)
+                safe_value = _sanitize_cell_for_excel(cell)
+                ws.cell(row=row_num, column=col_num, value=safe_value)
         if tbl:
             row_num += 1
     try:
@@ -1209,7 +1235,9 @@ def run_pipeline(
     if not use_config:
         crew = _get_crew(stream=stream)
 
-    inputs = {"demand": demand}
+    # 入参脱敏：仅对传入大模型的内容做掩码处理，本地保存仍保留原始需求文本
+    llm_demand = desensitize_for_llm(demand)
+    inputs = {"demand": llm_demand}
     step_outputs: list[dict[str, str]] = []
     quip_url: str | None = None
     sheets_url: str | None = None

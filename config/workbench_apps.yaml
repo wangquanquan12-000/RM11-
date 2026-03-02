@@ -14,18 +14,23 @@ apps:
     label: "编辑 Agent"
     order: 2
     enabled: true
+  - id: risk_report
+    label_key: risk_report.title
+    label: "需求风险分析"
+    order: 3
+    enabled: true
   - id: memory
     label_key: tabs.memory
     label: "项目记忆"
-    order: 3
+    order: 4
     enabled: true
   - id: chat
     label_key: tabs.chat
     label: "文档问答"
-    order: 4
+    order: 5
     enabled: true
   - id: settings
     label_key: app.settings
     label: "设置"
-    order: 5
+    order: 6
     enabled: true

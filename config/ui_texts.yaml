@@ -128,6 +128,20 @@ memory_tab:
   agent_summary_failed: "摘要生成失败"
   agent_summary_retry_btn: "重试"
 
+risk_report:
+  title: "需求风险分析"
+  section_title: "需求风险分析"
+  section_desc: "单独对文档做风险评估，产出表格报告，不参与四 Agent 流程。"
+  doc_source: "文档来源"
+  doc_source_quip: "Quip 链接"
+  doc_source_paste: "粘贴内容"
+  doc_source_memory: "项目记忆（选择近期文档）"
+  run_btn: "生成风险报告"
+  empty_doc_warning: "请先输入或拉取文档内容"
+  timeout_error: "分析超时，请稍后重试"
+  parse_warning: "未能解析为表格，展示原始输出"
+  download_excel: "📥 导出 Excel"
+
 chat_tab:
   section_title: "文档问答"
   section_desc: "基于已导入的需求文档或当前粘贴的内容，向 Agent 提问。"

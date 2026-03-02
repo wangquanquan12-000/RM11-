@@ -16,6 +16,7 @@ UI_TEXTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config
 from crew_test import (
     AGENTS_CONFIG_PATH,
     PROJECT_MEMORY_PATH,
+    _export_to_excel,
     _parse_markdown_tables,
     chat_with_document_agent,
     get_project_context_for_agent,
@@ -25,8 +26,6 @@ from crew_test import (
     load_demands_from_quip_folder,
     load_project_memory,
     parse_test_cases_file,
-    run_pipeline,
-    tables_to_text,
     update_project_memory,
 )
 from memory_store import (
@@ -39,6 +38,8 @@ from memory_store import (
     search,
     update_agent_summary,
 )
+from pipeline_service import run_quip_to_cases
+from risk_report_service import generate_risk_assessment_report
 
 CONFIG_DIR = os.path.dirname(AGENTS_CONFIG_PATH)
 DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
@@ -52,6 +53,7 @@ MODULE_QUIP_TO_CASES = "quip_to_cases"
 MODULE_AGENTS = "agents"
 MODULE_MEMORY = "memory"
 MODULE_CHAT = "chat"
+MODULE_RISK_REPORT = "risk_report"
 MODULE_SETTINGS = "settings"
 
 SUMMARY_PROMPT = "请用 200 字以内总结以下文档的核心要点与测试相关风险。"
@@ -227,27 +229,57 @@ def _ensure_task_context(module_id: str) -> None:
 
 
 def _load_defaults():
-    """从环境变量、Keyring 或 config/defaults.json 读取默认 Token / Key / 模型。"""
+    """从 Keyring/env/JSON/st.secrets 读取默认 Token / Key / 模型，线上优先 st.secrets。"""
+    import json
+
+    out: dict[str, str] = {"quip_token": "", "gemini_key": "", "gemini_model": "gemini-2.5-flash-lite"}
+
+    # 1. 首选 credential_store（Keyring + 环境变量 + JSON 封装）
     try:
         from credential_store import get_credentials
-        return get_credentials()
+
+        creds = get_credentials()
+        for k in ("quip_token", "gemini_key", "gemini_model"):
+            if creds.get(k):
+                out[k] = str(creds[k])
     except ImportError:
-        pass
-    # 降级：无 credential_store 时用 JSON
-    import json
-    out = {"quip_token": "", "gemini_key": "", "gemini_model": "gemini-2.5-flash-lite"}
-    out["quip_token"] = os.getenv("QUIP_ACCESS_TOKEN", "")
-    out["gemini_key"] = os.getenv("GEMINI_API_KEY", "")
-    out["gemini_model"] = os.getenv("GEMINI_MODEL", "")
+        creds = {}
+
+    # 2. 环境变量兜底
+    out["quip_token"] = out["quip_token"] or os.getenv("QUIP_ACCESS_TOKEN", "")
+    out["gemini_key"] = out["gemini_key"] or os.getenv("GEMINI_API_KEY", "")
+    env_model = os.getenv("GEMINI_MODEL", "")
+    if env_model and not out["gemini_model"]:
+        out["gemini_model"] = env_model
+
+    # 3. 兼容旧版本的 config/defaults.json
     if os.path.isfile(DEFAULTS_PATH):
         try:
             with open(DEFAULTS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                out["quip_token"] = out["quip_token"] or data.get("quip_token", "")
-                out["gemini_key"] = out["gemini_key"] or data.get("gemini_key", "")
-                out["gemini_model"] = out["gemini_model"] or data.get("gemini_model", "gemini-2.5-flash-lite")
+                out["quip_token"] = out["quip_token"] or str(data.get("quip_token", "") or "")
+                out["gemini_key"] = out["gemini_key"] or str(data.get("gemini_key", "") or "")
+                if not out["gemini_model"] and data.get("gemini_model"):
+                    out["gemini_model"] = str(data.get("gemini_model") or "")
         except Exception:
             pass
+
+    # 4. 线上优先 st.secrets（如在 Streamlit Cloud 等环境）
+    try:
+        import streamlit as st  # 本模块本身已依赖 streamlit
+
+        secrets = getattr(st, "secrets", None)
+        if secrets:
+            if "quip_token" in secrets and secrets["quip_token"]:
+                out["quip_token"] = str(secrets["quip_token"])
+            if "gemini_key" in secrets and secrets["gemini_key"]:
+                out["gemini_key"] = str(secrets["gemini_key"])
+            if "gemini_model" in secrets and secrets["gemini_model"]:
+                out["gemini_model"] = str(secrets["gemini_model"])
+    except Exception:
+        # 本地开发或无 secrets 时静默忽略
+        pass
+
     if not out["gemini_model"]:
         out["gemini_model"] = "gemini-2.5-flash-lite"
     return out
@@ -374,7 +406,7 @@ def _render_main_app(T: dict, cookies=None):
         st.markdown("**工作台**")
         for app in workbench_apps:
             module_id = app["id"]
-            if module_id in (MODULE_QUIP_TO_CASES, MODULE_MEMORY, MODULE_CHAT):
+            if module_id in (MODULE_QUIP_TO_CASES, MODULE_RISK_REPORT, MODULE_MEMORY, MODULE_CHAT):
                 if st.button(
                     app["label"],
                     key=f"nav_{module_id}",
@@ -411,6 +443,8 @@ def _render_main_app(T: dict, cookies=None):
 
     if current_page == MODULE_QUIP_TO_CASES:
         _render_module_quip_to_cases(T, defaults)
+    elif current_page == MODULE_RISK_REPORT:
+        _render_module_risk_report(T, defaults)
     elif current_page == MODULE_AGENTS:
         _render_module_agents(T)
     elif current_page == MODULE_MEMORY:
@@ -489,89 +523,50 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
     pipeline_running = st.session_state.get(_get_module_state_key(MODULE_QUIP_TO_CASES, "running"), False)
     run_btn_label = (_get_text(T, "run_tab.run_spinner") or "运行中…") if pipeline_running else (_get_text(T, "run_tab.run_btn") or "生成测试用例")
     if st.button(run_btn_label, type="primary", use_container_width=True, key="run_pipeline_btn", disabled=pipeline_running):
-            if not quip_url or not quip_url.strip():
-                st.error(_get_text(T, "run_tab.quip_url_required") or "请先填写需求文档链接")
-            else:
-                os.environ["QUIP_ACCESS_TOKEN"] = quip_token or os.environ.get("QUIP_ACCESS_TOKEN", "")
-                os.environ["GEMINI_API_KEY"] = gemini_key or os.environ.get("GEMINI_API_KEY", "")
-                os.environ["GEMINI_MODEL"] = gemini_model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
-                if not os.environ.get("GEMINI_API_KEY"):
-                    st.error(_get_text(T, "run_tab.gemini_required") or "请填写 Gemini API Key 或先在「账号与模型」中保存")
+        if not quip_url or not quip_url.strip():
+            st.error(_get_text(T, "run_tab.quip_url_required") or "请先填写需求文档链接")
+        else:
+            st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = None
+            st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = True
+            _progress_placeholder = st.empty()
+            try:
+                with _progress_placeholder.container():
+                    st.progress(0.2, text="需求拉取与生成中…")
+                with st.spinner(_get_text(T, "run_tab.run_spinner") or "正在拉取需求并生成用例…"):
+                    result = run_quip_to_cases(
+                        quip_url=quip_url.strip(),
+                        quip_token=quip_token or "",
+                        gemini_key=gemini_key or "",
+                        gemini_model=gemini_model,
+                        export_quip=export_quip,
+                        export_sheets=export_sheets,
+                        export_quip_target=(export_quip_target or "").strip() or None,
+                        auto_archive=auto_archive,
+                        output_dir=OUTPUT_DIR,
+                    )
+                if not result["ok"]:
+                    err_msg = result.get("error") or (_get_text(T, "run_tab.pipeline_fail") or "执行失败")
+                    st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = err_msg
+                    st.error(err_msg)
                 else:
+                    _r = result["last_run"] or {}
                     st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = None
-                    st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = True
-                    _progress_placeholder = st.empty()
-                    try:
-                        with _progress_placeholder.container():
-                            st.progress(0.2, text="需求拉取…")
-                        with st.spinner(_get_text(T, "run_tab.run_spinner") or "正在拉取需求并生成用例…"):
-                            try:
-                                demand, demand_title = load_demand_from_quip(quip_url.strip(), return_title=True)
-                            except Exception as e:
-                                _err_msg = f"{_get_text(T, 'run_tab.quip_fetch_fail') or '拉取文档失败'}: {e}"
-                                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = _err_msg
-                                st.error(_err_msg)
-                                demand = None
-                        if demand:
-                            try:
-                                _progress_placeholder.progress(0.5, text="四 Agent 执行中…")
-                                out = run_pipeline(
-                                    demand,
-                                    output_dir=OUTPUT_DIR,
-                                    export_excel=True,
-                                    export_quip=export_quip or bool(export_quip_target and export_quip_target.strip()),
-                                    export_sheets=export_sheets,
-                                    export_quip_target=(export_quip_target or "").strip() or None,
-                                    demand_title=demand_title,
-                                    return_details=True,
-                                )
-                            except Exception as e:
-                                _err_msg = f"{_get_text(T, 'run_tab.pipeline_fail') or '执行失败'}: {e}"
-                                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = _err_msg
-                                st.error(_err_msg)
-                                raise
-                            finally:
-                                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = False
-                            if isinstance(out, dict):
-                                _r = dict(out)
-                                _r["demand_title"] = demand_title or ""
-                                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_error")] = None
-                                st.session_state["app_last_run"] = _r
-                                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = _r
-                                _save_last_run(_r)
-                                st.session_state["app_last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
-                                st.session_state["app_last_demand_full"] = demand
-                                _archive_msg = ""
-                                if auto_archive:
-                                    result_str = out.get("result_str", "")
-                                    tables = _parse_markdown_tables(result_str)
-                                    if tables:
-                                        from datetime import datetime
-                                        new_text = tables_to_text(tables)
-                                        section = f"\n\n【{datetime.now().strftime('%Y-%m-%d %H:%M')} 新增】\n{new_text}"
-                                        current = get_entry_content(TEST_CASES_SOURCE_TYPE, "full_regression") or ""
-                                        updated = (current + section).strip()
-                                        add_entry(TEST_CASES_SOURCE_TYPE, updated, source_id="full_regression", title="全回归测试用例", summary=updated[:500])
-                                        _archive_msg = "，已归档到全回归用例"
-                                    else:
-                                        st.warning("归档失败：未解析到有效表格。")
-                                _progress_placeholder.progress(1.0, text="完成")
-                                _progress_placeholder.empty()
-                                st.success((_get_text(T, "run_tab.run_success") or "生成完成") + _archive_msg)
-                            else:
-                                _r = {"result_str": out, "step_outputs": [], "excel_path": None, "quip_url": None, "sheets_url": None, "timestamp": "", "txt_path": "", "demand_title": demand_title or ""}
-                                st.session_state["app_last_run"] = _r
-                                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = _r
-                                st.session_state["app_last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
-                                st.session_state["app_last_demand_full"] = demand
-                                _progress_placeholder.progress(1.0, text="完成")
-                                _progress_placeholder.empty()
-                                st.success(_get_text(T, "run_tab.run_success") or "生成完成")
-                        else:
-                            st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = False
-                    finally:
-                        _progress_placeholder.empty()
-                        st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = False
+                    st.session_state["app_last_run"] = _r
+                    st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = _r
+                    if _r:
+                        _save_last_run(_r)
+                    st.session_state["app_last_demand_snippet"] = result.get("demand_snippet", "")
+                    st.session_state["app_last_demand_full"] = result.get("demand_full", "")
+                    archive_warning = result.get("archive_warning", "")
+                    if archive_warning:
+                        st.warning(archive_warning)
+                    _progress_placeholder.progress(1.0, text="完成")
+                    _progress_placeholder.empty()
+                    success_msg = (_get_text(T, "run_tab.run_success") or "生成完成") + (result.get("archive_suffix") or "")
+                    st.success(success_msg)
+            finally:
+                _progress_placeholder.empty()
+                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = False
 
     r = st.session_state.get("app_last_run") or st.session_state.get(_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run"))
     if not r:
@@ -644,6 +639,138 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
 
         with st.expander(_get_text(T, "run_tab.section_result") or "查看最终结果全文", expanded=False):
             st.markdown(r.get("result_str", ""))
+
+
+def _render_module_risk_report(T: dict, defaults: dict):
+    """工作台模块：需求风险分析。独立调用分析 Agent，不参与四 Agent 协作。"""
+    st.subheader(_get_text(T, "risk_report.section_title") or "需求风险分析")
+    st.caption(_get_text(T, "risk_report.section_desc") or "单独对文档做风险评估，产出表格报告，不参与四 Agent 流程。")
+
+    doc_source = st.radio(
+        _get_text(T, "risk_report.doc_source") or "文档来源",
+        options=["quip", "paste", "memory"],
+        format_func=lambda x: {
+            "quip": _get_text(T, "risk_report.doc_source_quip") or "Quip 链接",
+            "paste": _get_text(T, "risk_report.doc_source_paste") or "粘贴内容",
+            "memory": _get_text(T, "risk_report.doc_source_memory") or "项目记忆（选择近期文档）",
+        }[x],
+        key="risk_report_doc_source",
+    )
+
+    doc_context = ""
+    if doc_source == "quip":
+        quip_url = st.text_input(
+            _get_text(T, "run_tab.quip_url_label") or "Quip 文档链接",
+            placeholder=_get_text(T, "run_tab.quip_url_placeholder") or "https://quip.com/xxx",
+            key="risk_report_quip_url",
+            label_visibility="collapsed",
+        )
+        if quip_url and quip_url.strip():
+            os.environ["QUIP_ACCESS_TOKEN"] = defaults.get("quip_token") or os.environ.get("QUIP_ACCESS_TOKEN", "")
+            if os.environ.get("QUIP_ACCESS_TOKEN"):
+                try:
+                    doc_context, _ = load_demand_from_quip(quip_url.strip(), return_title=True)
+                except Exception as e:
+                    st.error(str(e))
+            else:
+                st.warning(_get_text(T, "memory_tab.quip_token_required") or "请先填写 Quip Token（在设置页保存）")
+    elif doc_source == "paste":
+        doc_context = st.text_area(
+            _get_text(T, "chat_tab.paste_placeholder") or "粘贴需求文档内容",
+            height=180,
+            key="risk_report_paste",
+            label_visibility="collapsed",
+        ).strip()
+    else:
+        entries = list_recent(limit=20)
+        if not entries:
+            st.info(_get_text(T, "chat_tab.doc_source_empty") or "项目记忆暂无需求文档，请先在「项目记忆」页导入。")
+        else:
+            options = [f"{e.get('title', '') or e.get('source_id', '未命名')} ({e.get('created_at', '')})" for e in entries]
+            sel = st.selectbox(
+                _get_text(T, "risk_report.doc_source_memory") or "选择近期文档",
+                options=options,
+                key="risk_report_memory_sel",
+            )
+            if sel and sel in options:
+                idx = options.index(sel)
+                doc_context = (entries[idx].get("content") or entries[idx].get("summary") or "").strip()
+
+    running_key = _get_module_state_key(MODULE_RISK_REPORT, "running")
+    result_key = _get_module_state_key(MODULE_RISK_REPORT, "result")
+    error_key = _get_module_state_key(MODULE_RISK_REPORT, "error")
+    excel_path_key = _get_module_state_key(MODULE_RISK_REPORT, "excel_path")
+
+    is_running = st.session_state.get(running_key, False)
+    run_btn_label = (_get_text(T, "risk_report.run_btn") or "生成风险报告") if not is_running else (_get_text(T, "run_tab.run_spinner") or "运行中…")
+    if st.button(run_btn_label, type="primary", key="risk_report_run_btn", disabled=is_running):
+        if not doc_context or not doc_context.strip():
+            st.warning(_get_text(T, "risk_report.empty_doc_warning") or "请先输入或拉取文档内容")
+        else:
+            st.session_state[error_key] = None
+            st.session_state[running_key] = True
+            try:
+                os.environ["GEMINI_API_KEY"] = defaults.get("gemini_key") or os.environ.get("GEMINI_API_KEY", "")
+                os.environ["GEMINI_MODEL"] = defaults.get("gemini_model") or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+                if not os.environ.get("GEMINI_API_KEY"):
+                    st.session_state[error_key] = _get_text(T, "run_tab.gemini_required") or "请填写 Gemini API Key"
+                else:
+                    with st.spinner(_get_text(T, "run_tab.run_spinner") or "正在分析…"):
+                        result = generate_risk_assessment_report(
+                            document_content=doc_context,
+                            gemini_model=defaults.get("gemini_model", ""),
+                            gemini_key=defaults.get("gemini_key", ""),
+                        )
+                    st.session_state[result_key] = result
+                    st.session_state[error_key] = None
+                    tables = _parse_markdown_tables(result)
+                    if tables:
+                        from datetime import datetime
+                        os.makedirs(OUTPUT_DIR, exist_ok=True)
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        excel_path = os.path.join(OUTPUT_DIR, f"risk_report_{ts}.xlsx")
+                        if _export_to_excel(tables, excel_path):
+                            st.session_state[excel_path_key] = excel_path
+                        else:
+                            st.session_state[excel_path_key] = None
+                    else:
+                        st.session_state[excel_path_key] = None
+            except ValueError as e:
+                st.session_state[error_key] = str(e)
+            except Exception as e:
+                err_msg = str(e)
+                if "timeout" in err_msg.lower() or "429" in err_msg or "503" in err_msg:
+                    st.session_state[error_key] = _get_text(T, "risk_report.timeout_error") or "分析超时，请稍后重试"
+                else:
+                    st.session_state[error_key] = err_msg
+            finally:
+                st.session_state[running_key] = False
+            st.rerun()
+
+    last_error = st.session_state.get(error_key)
+    if last_error and not st.session_state.get(running_key, False):
+        st.error(last_error)
+        if st.button(_get_text(T, "run_tab.retry_btn") or "重试", key="risk_report_retry"):
+            st.session_state[error_key] = None
+            st.rerun()
+
+    last_result = st.session_state.get(result_key)
+    if last_result:
+        tables = _parse_markdown_tables(last_result)
+        if not tables:
+            st.warning(_get_text(T, "risk_report.parse_warning") or "未能解析为表格，展示原始输出")
+        st.markdown(last_result)
+        excel_path = st.session_state.get(excel_path_key)
+        if excel_path and os.path.isfile(excel_path):
+            with open(excel_path, "rb") as f:
+                st.download_button(
+                    _get_text(T, "risk_report.download_excel") or "📥 导出 Excel",
+                    f,
+                    file_name=os.path.basename(excel_path),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="risk_report_dl_excel",
+                )
+
 
 def _render_module_agents(T: dict):
     """工作台模块：编辑 Agent。"""
