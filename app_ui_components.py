@@ -63,7 +63,8 @@ def render_log_terminal(
     lines: 若为 dict 列表，每项需含 content 或 content 键；若为 str 列表则直接展示。
     供「查看 Agent 沟通过程」及后续模块复用。
     """
-    with st.expander(title, expanded=expanded, key=key):
+    # 内外 expander 使用唯一 key 避免 Streamlit 控件 ID 冲突
+    with st.expander(title, expanded=expanded, key=f"{key}_outer"):
         if not lines:
             st.info("暂无输出。")
             return
@@ -71,7 +72,7 @@ def render_log_terminal(
             if isinstance(item, dict):
                 step_title = item.get("task", "") or item.get("agent", "") or f"步骤 {i + 1}"
                 content = item.get("content", "")
-                with st.expander(f"{i + 1}. {step_title}", expanded=False):
+                with st.expander(f"{i + 1}. {step_title}", expanded=False, key=f"{key}_step_{i}"):
                     st.markdown(content or "")
             else:
                 st.text(item)

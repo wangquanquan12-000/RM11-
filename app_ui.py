@@ -37,6 +37,7 @@ STABLE_QUIP_BATCH_PATH = os.path.join(CONFIG_DIR, "stable_quip_batch.json")
 MODELS_CONFIG_PATH = os.path.join(CONFIG_DIR, "models.yaml")
 WORKBENCH_APPS_PATH = os.path.join(CONFIG_DIR, "workbench_apps.yaml")
 OUTPUT_DIR = "output"
+LAST_RUN_JSON = os.path.join(OUTPUT_DIR, "last_run.json")
 
 MODULE_QUIP_TO_CASES = "quip_to_cases"
 MODULE_AGENTS = "agents"
@@ -58,6 +59,55 @@ def _load_stable_quip_batch():
         except Exception:
             pass
     return out
+
+
+def _save_last_run(r: dict) -> None:
+    """持久化上次运行结果到 JSON，刷新后仍可展示。"""
+    try:
+        import json
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        out = {
+            "excel_path": r.get("excel_path"),
+            "txt_path": r.get("txt_path"),
+            "quip_url": r.get("quip_url"),
+            "sheets_url": r.get("sheets_url"),
+            "demand_title": r.get("demand_title", ""),
+            "timestamp": r.get("timestamp", ""),
+        }
+        with open(LAST_RUN_JSON, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _load_last_run() -> dict | None:
+    """从 JSON 恢复上次运行结果（刷新后使用）。"""
+    try:
+        import json
+        if not os.path.isfile(LAST_RUN_JSON):
+            return None
+        with open(LAST_RUN_JSON, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        excel_path = data.get("excel_path") or ""
+        txt_path = data.get("txt_path") or ""
+        if not excel_path and not txt_path:
+            return None
+        result_str = ""
+        if txt_path and os.path.isfile(txt_path):
+            with open(txt_path, "r", encoding="utf-8") as f:
+                result_str = f.read()
+        return {
+            "excel_path": excel_path if os.path.isfile(excel_path) else None,
+            "txt_path": txt_path,
+            "quip_url": data.get("quip_url"),
+            "sheets_url": data.get("sheets_url"),
+            "result_str": result_str,
+            "step_outputs": [],
+            "timestamp": data.get("timestamp", ""),
+            "demand_title": data.get("demand_title", ""),
+        }
+    except Exception:
+        return None
 
 
 def _save_stable_quip_batch(batch_size: int, batch_pause: float):
@@ -307,6 +357,18 @@ def _render_main_app(T: dict, cookies=None):
 
     _page_labels = {a["id"]: a["label"] for a in workbench_apps}
     _page_title = _page_labels.get(current_page, current_page)
+
+    # 顶部快捷导航（侧栏收起时仍可切换；点击左上角 ◀ 可展开侧栏）
+    st.caption("侧栏收起时点左上角 ◀ 展开 · 下方可快速切换")
+    nav_cols = st.columns(min(len(workbench_apps), 6))
+    for idx, app in enumerate(workbench_apps):
+        if idx >= 5:
+            break
+        with nav_cols[idx]:
+            if st.button(app["label"], key=f"topnav_{app['id']}", use_container_width=True):
+                st.session_state["current_page"] = app["id"]
+                st.rerun()
+
     if current_page == MODULE_QUIP_TO_CASES:
         st.title(_get_text(T, "run_tab.run_btn") or "生成测试用例")
     else:
@@ -400,14 +462,19 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
                     st.error(_get_text(T, "run_tab.gemini_required") or "请填写 Gemini API Key 或先在「账号与模型」中保存")
                 else:
                     st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = True
-                    with st.spinner(_get_text(T, "run_tab.run_spinner") or "正在拉取需求并生成用例…"):
-                        try:
-                            demand, demand_title = load_demand_from_quip(quip_url.strip(), return_title=True)
-                        except Exception as e:
-                            st.error(f"{_get_text(T, 'run_tab.quip_fetch_fail') or '拉取文档失败'}: {e}")
-                            demand = None
+                    _progress_placeholder = st.empty()
+                    try:
+                        with _progress_placeholder.container():
+                            st.progress(0.2, text="需求拉取…")
+                        with st.spinner(_get_text(T, "run_tab.run_spinner") or "正在拉取需求并生成用例…"):
+                            try:
+                                demand, demand_title = load_demand_from_quip(quip_url.strip(), return_title=True)
+                            except Exception as e:
+                                st.error(f"{_get_text(T, 'run_tab.quip_fetch_fail') or '拉取文档失败'}: {e}")
+                                demand = None
                         if demand:
                             try:
+                                _progress_placeholder.progress(0.5, text="四 Agent 执行中…")
                                 out = run_pipeline(
                                     demand,
                                     output_dir=OUTPUT_DIR,
@@ -424,8 +491,11 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
                             finally:
                                 st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = False
                             if isinstance(out, dict):
-                                st.session_state["app_last_run"] = out
-                                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = out
+                                _r = dict(out)
+                                _r["demand_title"] = demand_title or ""
+                                st.session_state["app_last_run"] = _r
+                                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = _r
+                                _save_last_run(_r)
                                 st.session_state["app_last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
                                 st.session_state["app_last_demand_full"] = demand
                                 _archive_msg = ""
@@ -442,17 +512,30 @@ def _render_module_quip_to_cases(T: dict, defaults: dict):
                                         _archive_msg = "，已归档到全回归用例"
                                     else:
                                         st.warning("归档失败：未解析到有效表格。")
+                                _progress_placeholder.progress(1.0, text="完成")
+                                _progress_placeholder.empty()
                                 st.success((_get_text(T, "run_tab.run_success") or "生成完成") + _archive_msg)
                             else:
-                                st.session_state["app_last_run"] = {"result_str": out, "step_outputs": [], "excel_path": None, "quip_url": None, "sheets_url": None, "timestamp": "", "txt_path": ""}
-                                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = st.session_state["app_last_run"]
+                                _r = {"result_str": out, "step_outputs": [], "excel_path": None, "quip_url": None, "sheets_url": None, "timestamp": "", "txt_path": "", "demand_title": demand_title or ""}
+                                st.session_state["app_last_run"] = _r
+                                st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = _r
                                 st.session_state["app_last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
                                 st.session_state["app_last_demand_full"] = demand
+                                _progress_placeholder.progress(1.0, text="完成")
+                                _progress_placeholder.empty()
                                 st.success(_get_text(T, "run_tab.run_success") or "生成完成")
                         else:
                             st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = False
+                    finally:
+                        _progress_placeholder.empty()
+                        st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "running")] = False
 
     r = st.session_state.get("app_last_run") or st.session_state.get(_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run"))
+    if not r:
+        r = _load_last_run()
+        if r:
+            st.session_state["app_last_run"] = r
+            st.session_state[_get_module_state_key(MODULE_QUIP_TO_CASES, "last_run")] = r
     if not r:
         st.info(_get_text(T, "app.empty_state_hint") or "暂无生成记录，输入链接开始第一次")
     if r:
@@ -672,6 +755,12 @@ def _render_module_memory(T: dict, defaults: dict):
 
     st.markdown(_get_text(T, "memory_tab.test_cases_section") or "方式三：导入全回归测试用例")
     st.caption(_get_text(T, "memory_tab.test_cases_caption") or "从 Quip 链接拉取、上传文件或粘贴内容，Agent 将参考既有用例理解项目。")
+
+    _full_regression = get_entry_content(TEST_CASES_SOURCE_TYPE, "full_regression")
+    if _full_regression:
+        _len_chars = len(_full_regression)
+        st.success(f"✓ 全回归用例已导入（{_len_chars} 字），生成用例时 Agent 将参考理解。")
+
     test_cases_quip_url = st.text_input(
         "Quip 文档链接",
         placeholder=_get_text(T, "memory_tab.test_cases_quip_placeholder") or "https://quip.com/xxx/全回归用例",
@@ -684,30 +773,33 @@ def _render_module_memory(T: dict, defaults: dict):
             if not os.environ.get("QUIP_ACCESS_TOKEN"):
                 st.warning("请先填写上方 Quip Token")
             else:
-                try:
-                    content, doc_title = load_demand_from_quip(test_cases_quip_url.strip(), return_title=True)
-                    add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title=doc_title or "全回归测试用例", summary=content[:500])
-                    st.success(f"已导入「{doc_title or '全回归'}」，Agent 将参考既有用例。")
-                    st.rerun()
-                except Exception as ex:
-                    st.error(f"拉取失败: {ex}")
+                with st.spinner("拉取中…"):
+                    try:
+                        content, doc_title = load_demand_from_quip(test_cases_quip_url.strip(), return_title=True)
+                        add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title=doc_title or "全回归测试用例", summary=content[:500])
+                        st.success(f"已导入「{doc_title or '全回归'}」（{len(content)} 字），Agent 将参考既有用例。")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"拉取失败: {ex}")
         else:
             st.error("请填写 Quip 文档链接")
-        try:
-            from app_ui_components import render_file_uploader
-            test_cases_upload_result = render_file_uploader(
-                accepted_types=["xlsx", "xls", "csv", "txt"],
-                key="test_cases_upload",
-                label=_get_text(T, "memory_tab.test_cases_upload_placeholder") or "上传文件",
-            )
-            test_cases_file = test_cases_upload_result["file"] if test_cases_upload_result else None
-        except ImportError:
-            test_cases_file = st.file_uploader(
-                _get_text(T, "memory_tab.test_cases_upload_placeholder") or "上传文件",
-                type=["xlsx", "xls", "csv", "txt"],
-                key="test_cases_upload",
-                label_visibility="collapsed",
-            )
+
+    try:
+        from app_ui_components import render_file_uploader
+        test_cases_upload_result = render_file_uploader(
+            accepted_types=["xlsx", "xls", "csv", "txt"],
+            key="test_cases_upload",
+            label=_get_text(T, "memory_tab.test_cases_upload_placeholder") or "上传文件",
+        )
+        test_cases_file = test_cases_upload_result["file"] if test_cases_upload_result else None
+    except ImportError:
+        test_cases_file = st.file_uploader(
+            _get_text(T, "memory_tab.test_cases_upload_placeholder") or "上传文件",
+            type=["xlsx", "xls", "csv", "txt"],
+            key="test_cases_upload",
+            label_visibility="collapsed",
+        )
+
     test_cases_paste = st.text_area(
         _get_text(T, "memory_tab.test_cases_paste_placeholder") or "或粘贴内容",
         placeholder=_get_text(T, "memory_tab.test_cases_paste_placeholder") or "表格（| 分隔）或纯文本",
@@ -716,22 +808,22 @@ def _render_module_memory(T: dict, defaults: dict):
         label_visibility="collapsed",
     )
     if st.button(_get_text(T, "memory_tab.test_cases_import_btn") or "导入测试用例", key="mem_import_test_cases"):
-        content = ""
         if test_cases_file:
-            try:
-                content, rows = parse_test_cases_file(test_cases_file)
-                if not content.strip():
-                    st.warning("文件内容为空")
-                else:
-                    add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title="全回归测试用例", summary=content[:500])
-                    st.success(f"已导入 {rows} 行，Agent 将参考既有用例。")
-                    st.rerun()
-            except Exception as ex:
-                st.error(f"解析失败: {ex}")
+            with st.spinner("解析文件中…"):
+                try:
+                    content, rows = parse_test_cases_file(test_cases_file)
+                    if not content.strip():
+                        st.warning("文件内容为空")
+                    else:
+                        add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title="全回归测试用例", summary=content[:500])
+                        st.success(f"已导入 {rows} 行（{len(content)} 字），Agent 将参考既有用例。")
+                        st.rerun()
+                except Exception as ex:
+                    st.error(f"解析失败: {ex}")
         elif test_cases_paste and test_cases_paste.strip():
             content = test_cases_paste.strip()
             add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title="全回归测试用例", summary=content[:500])
-            st.success("已导入，Agent 将参考既有用例。")
+            st.success(f"已导入（{len(content)} 字），Agent 将参考既有用例。")
             st.rerun()
         else:
             st.error("请上传文件或粘贴内容")
@@ -862,6 +954,9 @@ def _render_module_chat(T: dict, defaults: dict):
 
 def _render_module_settings(T: dict, defaults: dict):
     """工作台模块：设置（模型、凭证）。"""
+    if st.button("← 返回", key="settings_back"):
+        st.session_state["current_page"] = MODULE_QUIP_TO_CASES
+        st.rerun()
     st.caption("配置 API 凭证与模型，保存后生成用例时将自动使用。")
     with st.container():
         col1, col2 = st.columns(2)
