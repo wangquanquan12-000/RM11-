@@ -14,9 +14,27 @@ from crew_test import (
     load_demand_from_quip,
     run_pipeline,
     _parse_markdown_tables,
+    _parse_json_tables,
     tables_to_text,
+    tables_to_markdown,
     export_tables_to_excel_bytes,
 )
+
+
+def _debug_save_parse_fail(raw_content: str) -> None:
+    """解析失败时保存原始内容到 output/parse_fail_debug.txt，便于排查。"""
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+        out_dir = os.path.join(base, "output")
+        os.makedirs(out_dir, exist_ok=True)
+        debug_path = os.path.join(out_dir, "parse_fail_debug.txt")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(debug_path, "a", encoding="utf-8") as f:
+            f.write(f"\n\n=== 解析失败 {ts} ===\n\n")
+            f.write((raw_content or "")[:8000])
+            f.write("\n")
+    except Exception:
+        pass
 from memory_store import (
     TEST_CASES_SOURCE_TYPE,
     add_entry,
@@ -259,7 +277,7 @@ def run_upload_to_cases(
 
     for s in step_outputs:
         tid = s.get("task") or ""
-        content = (s.get("content") or "").strip()
+        content = str(s.get("content") or "").strip()
         if tid == "task1":
             issues = content
         elif tid == "task2":
@@ -267,11 +285,26 @@ def run_upload_to_cases(
         elif tid == "task3":
             cases_md = content
 
-    # 优先从 task3（用例表）解析表格；若无则从 result_str（通常为 task4 输出，可能含修正后表格）尝试
+    # 优先从 task3 解析：先尝试 JSON，再尝试 Markdown；若无则从 result_str（task4 输出）尝试
     result_str = (out.get("result_str") or "").strip()
-    tables = _parse_markdown_tables(cases_md) if (cases_md or "").strip() else []
-    if not tables and result_str:
-        tables = _parse_markdown_tables(result_str)
+    tables = []
+    for raw in (cases_md, result_str):
+        if not (raw or "").strip():
+            continue
+        tables = _parse_json_tables(raw)
+        if not tables:
+            tables = _parse_markdown_tables(raw)
+        if tables:
+            break
+
+    # 解析成功时，统一转为 Markdown 供 UI 展示（JSON 解析时 cases_md 为原始 JSON，需转换）
+    if tables:
+        cases_md = tables_to_markdown(tables)
+
+    # 排查1：解析失败时保存原始内容，便于排查
+    if not tables and (cases_md or result_str):
+        _debug_save_parse_fail(cases_md or result_str)
+
     excel_bytes = export_tables_to_excel_bytes(tables) if tables else None
 
     return {
