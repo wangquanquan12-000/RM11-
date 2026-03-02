@@ -1,6 +1,24 @@
 # 网页文案配置 - 在此编辑即可生效，无需改代码
 # 修改后刷新页面即可看到效果
 
+auth:
+  page_title: "登录 | 需求 → 测试用例"
+  login_tab: "登录"
+  register_tab: "注册"
+  username_label: "用户名"
+  username_placeholder: "请输入用户名"
+  password_label: "密码"
+  password_placeholder: "请输入密码"
+  confirm_password_label: "确认密码"
+  confirm_password_placeholder: "再次输入密码"
+  captcha_label: "验证码"
+  captcha_placeholder: "请输入上方验证码"
+  captcha_hint: "输入图中数字，或使用万能验证码"
+  login_btn: "登录"
+  register_btn: "注册"
+  logout_btn: "退出登录"
+  logged_in_as: "当前用户"
+
 app:
   title: "需求 → 测试用例"
   page_title: "需求 → 测试用例"

@@ -30,6 +30,23 @@ from crew_test import (
 )
 from memory_store import TEST_CASES_SOURCE_TYPE, add_entry, delete_entry, get_entry_content, list_recent, search
 
+try:
+    from auth import (
+        verify_user,
+        register_user,
+        verify_captcha,
+        generate_captcha,
+        create_session_token,
+        validate_session_token,
+        COOKIE_NAME,
+        SESSION_DAYS,
+    )
+except ImportError:
+    verify_user = register_user = verify_captcha = generate_captcha = None
+    create_session_token = validate_session_token = None
+    COOKIE_NAME = "auth_session"
+    SESSION_DAYS = 7
+
 CONFIG_DIR = os.path.dirname(AGENTS_CONFIG_PATH)
 DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
 STABLE_QUIP_BATCH_PATH = os.path.join(CONFIG_DIR, "stable_quip_batch.json")
@@ -68,7 +85,13 @@ GEMINI_MODELS = [
 
 
 def _load_defaults():
-    """从环境变量或 config/defaults.json 读取默认 Token / Key / 模型。"""
+    """从环境变量、Keyring 或 config/defaults.json 读取默认 Token / Key / 模型。"""
+    try:
+        from credential_store import get_credentials
+        return get_credentials()
+    except ImportError:
+        pass
+    # 降级：无 credential_store 时用 JSON
     import json
     out = {"quip_token": "", "gemini_key": "", "gemini_model": "gemini-2.5-flash-lite"}
     out["quip_token"] = os.getenv("QUIP_ACCESS_TOKEN", "")
@@ -81,10 +104,6 @@ def _load_defaults():
                 out["quip_token"] = out["quip_token"] or data.get("quip_token", "")
                 out["gemini_key"] = out["gemini_key"] or data.get("gemini_key", "")
                 out["gemini_model"] = out["gemini_model"] or data.get("gemini_model", "gemini-2.5-flash-lite")
-            try:
-                os.chmod(DEFAULTS_PATH, 0o600)  # 确保已存在文件也限制为仅当前用户可读写
-            except OSError:
-                pass
         except Exception:
             pass
     if not out["gemini_model"]:
@@ -92,19 +111,26 @@ def _load_defaults():
     return out
 
 
-def _save_defaults(quip_token: str, gemini_key: str, gemini_model: str = ""):
-    """将默认 Token / Key / 模型 写入 config/defaults.json（本地仅自己使用）。"""
+def _save_defaults(quip_token: str, gemini_key: str, gemini_model: str = "") -> str:
+    """将默认 Token / Key / 模型写入 Keyring 或 config/defaults.json。返回存储方式。"""
+    try:
+        from credential_store import set_credentials
+        ok, mode = set_credentials(quip_token, gemini_key, gemini_model)
+        return mode
+    except ImportError:
+        pass
     import json
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    payload = {"quip_token": quip_token, "gemini_key": gemini_key}
+    payload = {"quip_token": quip_token or "", "gemini_key": gemini_key or ""}
     if gemini_model:
         payload["gemini_model"] = gemini_model
     with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     try:
-        os.chmod(DEFAULTS_PATH, 0o600)  # 仅当前用户可读写，降低泄露风险
+        os.chmod(DEFAULTS_PATH, 0o600)
     except OSError:
         pass
+    return "JSON"
 
 
 def _load_ui_texts():
@@ -129,11 +155,107 @@ def _get_text(data: dict, path: str, default: str = "") -> str:
     return data if isinstance(data, str) else default
 
 
-def main():
-    T = _load_ui_texts()
+def _render_auth_page(T: dict, cookies=None):
+    """渲染登录/注册页，含验证码（支持万能码）。"""
+    auth_title = _get_text(T, "auth.page_title") or "登录 | 需求 → 测试用例"
+    st.markdown(f"## {auth_title}")
+    st.caption("请登录或注册后使用。")
+    auth_login = _get_text(T, "auth.login_tab") or "登录"
+    auth_register = _get_text(T, "auth.register_tab") or "注册"
+    auth_tab1, auth_tab2 = st.tabs([auth_login, auth_register])
+
+    # 验证码：每次打开 tab 或刷新时生成，存入 session
+    if "auth_captcha_code" not in st.session_state:
+        st.session_state["auth_captcha_code"] = generate_captcha() if generate_captcha else "1234"
+
+    with auth_tab1:
+        with st.form("auth_login_form"):
+            u = st.text_input(
+                _get_text(T, "auth.username_label") or "用户名",
+                placeholder=_get_text(T, "auth.username_placeholder") or "请输入用户名",
+                key="auth_login_username",
+            )
+            p = st.text_input(
+                _get_text(T, "auth.password_label") or "密码",
+                type="password",
+                placeholder=_get_text(T, "auth.password_placeholder") or "请输入密码",
+                key="auth_login_password",
+            )
+            captcha_display = st.session_state["auth_captcha_code"]
+            st.markdown(f"**验证码：** `{captcha_display}`")
+            c = st.text_input(
+                _get_text(T, "auth.captcha_label") or "验证码",
+                placeholder=_get_text(T, "auth.captcha_placeholder") or "请输入上方验证码",
+                key="auth_login_captcha",
+                help=_get_text(T, "auth.captcha_hint") or "输入图中数字，或使用万能验证码",
+            )
+            login_btn = st.form_submit_button(_get_text(T, "auth.login_btn") or "登录")
+            if login_btn and verify_user and verify_captcha:
+                if not verify_captcha(c, captcha_display):
+                    st.error("验证码错误")
+                    st.session_state["auth_captcha_code"] = generate_captcha()
+                else:
+                    ok, msg = verify_user(u, p)
+                    if ok:
+                        st.session_state["auth_logged_in_user"] = msg
+                        st.session_state["auth_captcha_code"] = generate_captcha()
+                        if cookies and create_session_token:
+                            try:
+                                cookies[COOKIE_NAME] = create_session_token(msg)
+                                cookies.save()
+                            except Exception:
+                                pass
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                        st.session_state["auth_captcha_code"] = generate_captcha()
+
+    with auth_tab2:
+        with st.form("auth_register_form"):
+            ru = st.text_input(
+                _get_text(T, "auth.username_label") or "用户名",
+                placeholder=_get_text(T, "auth.username_placeholder") or "请输入用户名",
+                key="auth_reg_username",
+            )
+            rp = st.text_input(
+                _get_text(T, "auth.password_label") or "密码",
+                type="password",
+                placeholder=_get_text(T, "auth.password_placeholder") or "请输入密码",
+                key="auth_reg_password",
+            )
+            rp2 = st.text_input(
+                _get_text(T, "auth.confirm_password_label") or "确认密码",
+                type="password",
+                placeholder=_get_text(T, "auth.confirm_password_placeholder") or "再次输入密码",
+                key="auth_reg_confirm",
+            )
+            st.markdown(f"**验证码：** `{st.session_state['auth_captcha_code']}`")
+            rc = st.text_input(
+                _get_text(T, "auth.captcha_label") or "验证码",
+                placeholder=_get_text(T, "auth.captcha_placeholder") or "请输入上方验证码",
+                key="auth_reg_captcha",
+                help=_get_text(T, "auth.captcha_hint") or "输入图中数字，或使用万能验证码",
+            )
+            reg_btn = st.form_submit_button(_get_text(T, "auth.register_btn") or "注册")
+            if reg_btn and register_user and verify_captcha:
+                if not verify_captcha(rc, st.session_state["auth_captcha_code"]):
+                    st.error("验证码错误")
+                    st.session_state["auth_captcha_code"] = generate_captcha()
+                elif rp != rp2:
+                    st.error("两次密码不一致")
+                else:
+                    ok, msg = register_user(ru, rp)
+                    if ok:
+                        st.success(msg + "，请切换到「登录」页登录")
+                        st.session_state["auth_captcha_code"] = generate_captcha()
+                    else:
+                        st.error(msg)
+                        st.session_state["auth_captcha_code"] = generate_captcha()
+
+
+def _render_main_app(T: dict):
     page_title = _get_text(T, "app.page_title") or "需求 → 测试用例流水线"
     app_title = _get_text(T, "app.title") or page_title
-    st.set_page_config(page_title=page_title, layout="wide", initial_sidebar_state="collapsed")
     st.markdown("""
     <style>
     /* 布局与层次 */
@@ -259,8 +381,8 @@ def main():
                     help=_get_text(T, "run_tab.gemini_quota_help") or "在 Google AI Studio 查看用量与限额（新开页）",
                 )
             if st.button(_get_text(T, "run_tab.save_defaults_btn") or "保存到本地（下次无需再填）", key="run_save_defaults", help=_get_text(T, "run_tab.save_defaults_help") or "仅限本机；共享电脑建议用环境变量"):
-                _save_defaults(quip_token or defaults["quip_token"], gemini_key or defaults["gemini_key"], gemini_model)
-                st.success(_get_text(T, "run_tab.save_success") or "已保存到本地")
+                mode = _save_defaults(quip_token or defaults["quip_token"], gemini_key or defaults["gemini_key"], gemini_model)
+                st.success((_get_text(T, "run_tab.save_success") or "已保存到本地") + f"（{mode}）")
                 st.rerun()
 
         st.markdown('<p class="step-label step-3">③ 导出方式</p>', unsafe_allow_html=True)
@@ -316,9 +438,9 @@ def main():
                                 st.error(f"{_get_text(T, 'run_tab.pipeline_fail') or '执行失败'}: {e}")
                                 raise
                             if isinstance(out, dict):
-                                st.session_state["last_run"] = out
-                                st.session_state["last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
-                                st.session_state["last_demand_full"] = demand
+                                st.session_state["app_last_run"] = out
+                                st.session_state["app_last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
+                                st.session_state["app_last_demand_full"] = demand
                                 _archive_msg = ""
                                 if auto_archive:
                                     result_str = out.get("result_str", "")
@@ -333,13 +455,13 @@ def main():
                                         _archive_msg = "，已归档到全回归用例"
                                 st.success((_get_text(T, "run_tab.run_success") or "生成完成") + _archive_msg)
                             else:
-                                st.session_state["last_run"] = {"result_str": out, "step_outputs": [], "excel_path": None, "quip_url": None, "sheets_url": None, "timestamp": "", "txt_path": ""}
-                                st.session_state["last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
-                                st.session_state["last_demand_full"] = demand
+                                st.session_state["app_last_run"] = {"result_str": out, "step_outputs": [], "excel_path": None, "quip_url": None, "sheets_url": None, "timestamp": "", "txt_path": ""}
+                                st.session_state["app_last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
+                                st.session_state["app_last_demand_full"] = demand
                                 st.success(_get_text(T, "run_tab.run_success") or "生成完成")
 
-        if st.session_state.get("last_run"):
-            r = st.session_state["last_run"]
+        if st.session_state.get("app_last_run"):
+            r = st.session_state["app_last_run"]
             # 先展示「输出与下载」，最常用
             st.subheader(_get_text(T, "run_tab.section_links") or "输出与下载")
             excel_path = r.get("excel_path")
@@ -615,9 +737,9 @@ def main():
                     st.success("已保存")
             with c2:
                 if st.button("从本次运行追加", key="mem_update_from_run"):
-                    if st.session_state.get("last_run") and st.session_state.get("last_demand_snippet"):
-                        snippet = st.session_state["last_demand_snippet"]
-                        result = st.session_state["last_run"].get("result_str", "")[:2000]
+                    if st.session_state.get("app_last_run") and st.session_state.get("app_last_demand_snippet"):
+                        snippet = st.session_state["app_last_demand_snippet"]
+                        result = st.session_state["app_last_run"].get("result_str", "")[:2000]
                         addition = f"【最近一次需求摘要】\n{snippet}\n\n【产出摘要】\n{result}"
                         update_project_memory(addition)
                         add_entry("run_summary", result, title="最近一次运行", summary=snippet)
@@ -665,21 +787,21 @@ def main():
                     key="chat_paste_doc",
                 ).strip()
 
-        if "doc_chat_messages" not in st.session_state:
-            st.session_state["doc_chat_messages"] = []
+        if "app_doc_chat_messages" not in st.session_state:
+            st.session_state["app_doc_chat_messages"] = []
 
-        if st.session_state["doc_chat_messages"] and st.button(_get_text(T, "chat_tab.clear_btn") or "清空对话", key="chat_clear"):
-            st.session_state["doc_chat_messages"] = []
+        if st.session_state["app_doc_chat_messages"] and st.button(_get_text(T, "chat_tab.clear_btn") or "清空对话", key="chat_clear"):
+            st.session_state["app_doc_chat_messages"] = []
             st.rerun()
 
-        for msg in st.session_state["doc_chat_messages"]:
+        for msg in st.session_state["app_doc_chat_messages"]:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
         if doc_context:
             if st.button(_get_text(T, "chat_tab.quick_summary") or "请总结这份文档的核心要点与潜在风险", key="quick_summary_btn"):
                 user_q = _get_text(T, "chat_tab.quick_summary") or "请总结这份文档的核心要点与潜在风险"
-                st.session_state["doc_chat_messages"].append({"role": "user", "content": user_q})
+                st.session_state["app_doc_chat_messages"].append({"role": "user", "content": user_q})
                 with st.chat_message("assistant"):
                     with st.spinner(_get_text(T, "chat_tab.thinking") or "文档 Agent 正在思考…"):
                         try:
@@ -693,12 +815,12 @@ def main():
                         except Exception as e:
                             reply = f"调用失败: {e}"
                     st.markdown(reply)
-                st.session_state["doc_chat_messages"].append({"role": "assistant", "content": reply})
+                st.session_state["app_doc_chat_messages"].append({"role": "assistant", "content": reply})
                 st.rerun()
 
         user_input = st.chat_input(_get_text(T, "chat_tab.chat_placeholder") or "输入问题…")
         if user_input and doc_context:
-            st.session_state["doc_chat_messages"].append({"role": "user", "content": user_input})
+            st.session_state["app_doc_chat_messages"].append({"role": "user", "content": user_input})
             with st.chat_message("assistant"):
                 with st.spinner(_get_text(T, "chat_tab.thinking") or "文档 Agent 正在思考…"):
                     try:
@@ -712,10 +834,77 @@ def main():
                     except Exception as e:
                         reply = f"调用失败: {e}"
                 st.markdown(reply)
-            st.session_state["doc_chat_messages"].append({"role": "assistant", "content": reply})
+            st.session_state["app_doc_chat_messages"].append({"role": "assistant", "content": reply})
             st.rerun()
         elif user_input and not doc_context:
             st.warning(_get_text(T, "chat_tab.doc_source_empty") or "请先选择并加载文档内容。")
+
+
+def _get_cookie_manager():
+    """获取 Cookie 管理器，用于 7 天免登。若不可用返回 None。"""
+    try:
+        from streamlit_cookies_manager import EncryptedCookieManager
+        cookies = EncryptedCookieManager(
+            prefix="test_case_pipeline/",
+            password=os.environ.get("COOKIES_PASSWORD", "test_case_pipeline_cookie_v1"),
+        )
+        return cookies
+    except Exception:
+        return None
+
+
+def main():
+    """入口：认证检查 → 登录/注册页 或 主应用。登录态保持 7 天（Cookie + 签名 Token）。"""
+    T = _load_ui_texts()
+    page_title = _get_text(T, "app.page_title") or "需求 → 测试用例"
+    st.set_page_config(page_title=page_title, layout="wide", initial_sidebar_state="collapsed")
+
+    # 未启用认证时直接进入主应用（向后兼容）
+    if not verify_user:
+        _render_main_app(T)
+        return
+
+    cookies = _get_cookie_manager()
+    if cookies and not cookies.ready():
+        st.caption("正在加载…")
+        st.stop()
+
+    # 优先从 Cookie 恢复登录态（7 天有效）
+    if not st.session_state.get("auth_logged_in_user") and cookies and validate_session_token:
+        token = None
+        try:
+            token = cookies[COOKIE_NAME]
+        except (KeyError, TypeError, Exception):
+            pass
+        if token:
+            username = validate_session_token(token)
+            if username:
+                st.session_state["auth_logged_in_user"] = username
+                st.rerun()
+
+    # 未登录则显示登录/注册页
+    if not st.session_state.get("auth_logged_in_user"):
+        _render_auth_page(T, cookies)
+        return
+
+    # 已登录：侧边栏显示用户与退出，主区域渲染应用
+    with st.sidebar:
+        user = st.session_state["auth_logged_in_user"]
+        st.caption(f"{_get_text(T, 'auth.logged_in_as') or '当前用户'}: **{user}**")
+        st.caption(f"（{SESSION_DAYS} 天内免登录）")
+        if st.button(_get_text(T, "auth.logout_btn") or "退出登录", key="auth_logout"):
+            del st.session_state["auth_logged_in_user"]
+            if "auth_captcha_code" in st.session_state:
+                del st.session_state["auth_captcha_code"]
+            if cookies:
+                try:
+                    del cookies[COOKIE_NAME]
+                    cookies.save()
+                except (KeyError, Exception):
+                    pass
+            st.rerun()
+
+    _render_main_app(T)
 
 
 if __name__ == "__main__":
