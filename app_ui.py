@@ -16,17 +16,19 @@ UI_TEXTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config
 from crew_test import (
     AGENTS_CONFIG_PATH,
     PROJECT_MEMORY_PATH,
+    _parse_markdown_tables,
     chat_with_document_agent,
     get_project_context_for_agent,
     is_product_requirement_doc,
     load_agents_config,
     load_demand_from_quip,
     load_demands_from_quip_folder,
-    load_project_memory,
+    parse_test_cases_file,
     run_pipeline,
+    tables_to_text,
     update_project_memory,
 )
-from memory_store import add_entry, delete_entry, search, list_recent
+from memory_store import TEST_CASES_SOURCE_TYPE, add_entry, delete_entry, get_entry_content, list_recent, search
 
 CONFIG_DIR = os.path.dirname(AGENTS_CONFIG_PATH)
 DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
@@ -79,6 +81,10 @@ def _load_defaults():
                 out["quip_token"] = out["quip_token"] or data.get("quip_token", "")
                 out["gemini_key"] = out["gemini_key"] or data.get("gemini_key", "")
                 out["gemini_model"] = out["gemini_model"] or data.get("gemini_model", "gemini-2.5-flash-lite")
+            try:
+                os.chmod(DEFAULTS_PATH, 0o600)  # 确保已存在文件也限制为仅当前用户可读写
+            except OSError:
+                pass
         except Exception:
             pass
     if not out["gemini_model"]:
@@ -95,6 +101,10 @@ def _save_defaults(quip_token: str, gemini_key: str, gemini_model: str = ""):
         payload["gemini_model"] = gemini_model
     with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+    try:
+        os.chmod(DEFAULTS_PATH, 0o600)  # 仅当前用户可读写，降低泄露风险
+    except OSError:
+        pass
 
 
 def _load_ui_texts():
@@ -141,8 +151,10 @@ def main():
         font-size: 0.95rem !important; font-weight: 500 !important;
         color: #64748b !important; margin-top: 0.75rem !important; margin-bottom: 0.4rem !important;
     }
-    /* 步骤标题 */
+    /* 步骤标题与区块间距 */
     .step-label { font-size: 0.8rem; font-weight: 600; color: #0d9488; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.35rem; }
+    .step-label.step-3, .step-label.step-4 { margin-top: 1.25rem; }
+    div[data-testid="stExpander"] { margin-top: 0.5rem; margin-bottom: 0.25rem; }
     .step-label + .step-label { margin-top: 1rem; }
     .run-section { margin-top: 1rem; }
     .export-row { margin-bottom: 0.5rem; }
@@ -197,6 +209,7 @@ def main():
     # ---------- 运行流水线 ----------
     with tab_run:
         st.caption(_get_text(T, "run_tab.page_caption") or "从 Quip 需求文档生成测试用例，支持导出 Excel / Quip / Google 表格。")
+        st.markdown("<div style='margin-bottom:0.5rem'></div>", unsafe_allow_html=True)
 
         st.markdown('<p class="step-label">① 需求文档</p>', unsafe_allow_html=True)
         quip_url = st.text_input(
@@ -208,7 +221,9 @@ def main():
         if not quip_url or not quip_url.strip():
             st.caption(_get_text(T, "run_tab.quip_url_hint") or "示例：https://quip.com/xxx 或 12 位 thread_id")
 
-        with st.expander(_get_text(T, "run_tab.credentials_expander") or "② 账号与模型（已保存可跳过）", expanded=not (defaults.get("quip_token") and defaults.get("gemini_key"))):
+        _has_saved = bool(defaults.get("quip_token") and defaults.get("gemini_key"))
+        _exp_label = "② 账号与模型（已保存 ✓）" if _has_saved else "② 账号与模型"
+        with st.expander(_exp_label, expanded=not _has_saved):
             col1, col2 = st.columns(2)
             with col1:
                 quip_token = st.text_input(
@@ -243,27 +258,32 @@ def main():
                     _quota_url,
                     help=_get_text(T, "run_tab.gemini_quota_help") or "在 Google AI Studio 查看用量与限额（新开页）",
                 )
-            if st.button(_get_text(T, "run_tab.save_defaults_btn") or "保存到本地（下次无需再填）", key="run_save_defaults"):
+            if st.button(_get_text(T, "run_tab.save_defaults_btn") or "保存到本地（下次无需再填）", key="run_save_defaults", help=_get_text(T, "run_tab.save_defaults_help") or "仅限本机；共享电脑建议用环境变量"):
                 _save_defaults(quip_token or defaults["quip_token"], gemini_key or defaults["gemini_key"], gemini_model)
                 st.success(_get_text(T, "run_tab.save_success") or "已保存到本地")
                 st.rerun()
 
-        st.markdown('<p class="step-label">③ 导出方式</p>', unsafe_allow_html=True)
-        ex_col1, ex_col2, ex_col3 = st.columns(3)
-        with ex_col1:
-            st.caption("Excel：默认生成并可下载")
-        with ex_col2:
+        st.markdown('<p class="step-label step-3">③ 导出方式</p>', unsafe_allow_html=True)
+        st.caption("Excel 默认生成并可下载。")
+        ex_row1, ex_row2 = st.columns([1, 1])
+        with ex_row1:
             export_quip = st.checkbox(_get_text(T, "run_tab.export_quip") or "导出到 Quip", value=False, key="run_export_quip")
-        with ex_col3:
+        with ex_row2:
             export_sheets = st.checkbox(_get_text(T, "run_tab.export_sheets") or "导出到 Google 表格", value=False, key="run_export_sheets")
         export_quip_target = st.text_input(
             _get_text(T, "run_tab.export_quip_target_label") or "Quip 目标文档（可选）",
-            placeholder=_get_text(T, "run_tab.export_quip_target_placeholder") or "留空则新建文档；填写则追加到该文档末尾",
+            placeholder=_get_text(T, "run_tab.export_quip_target_placeholder") or "留空则新建；填写则追加到该文档末尾",
             key="export_quip_target",
-            label_visibility="collapsed",
+            help="勾选「导出到 Quip」后，可填写目标文档链接以追加内容；留空则新建文档。",
+        )
+        auto_archive = st.checkbox(
+            _get_text(T, "run_tab.auto_archive_label") or "生成后自动归档到全回归用例",
+            value=False,
+            key="run_auto_archive",
+            help=_get_text(T, "run_tab.auto_archive_help") or "将本次生成的新用例追加到项目记忆中的全回归用例，供下次生成时参考。",
         )
 
-        st.markdown('<p class="step-label">④ 执行</p>', unsafe_allow_html=True)
+        st.markdown('<p class="step-label step-4">④ 执行</p>', unsafe_allow_html=True)
         if st.button(_get_text(T, "run_tab.run_btn") or "生成测试用例", type="primary", use_container_width=True, key="run_pipeline_btn"):
             if not quip_url or not quip_url.strip():
                 st.error(_get_text(T, "run_tab.quip_url_required") or "请先填写需求文档链接")
@@ -299,11 +319,24 @@ def main():
                                 st.session_state["last_run"] = out
                                 st.session_state["last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
                                 st.session_state["last_demand_full"] = demand
+                                _archive_msg = ""
+                                if auto_archive:
+                                    result_str = out.get("result_str", "")
+                                    tables = _parse_markdown_tables(result_str)
+                                    if tables:
+                                        from datetime import datetime
+                                        new_text = tables_to_text(tables)
+                                        section = f"\n\n【{datetime.now().strftime('%Y-%m-%d %H:%M')} 新增】\n{new_text}"
+                                        current = get_entry_content(TEST_CASES_SOURCE_TYPE, "full_regression") or ""
+                                        updated = (current + section).strip()
+                                        add_entry(TEST_CASES_SOURCE_TYPE, updated, source_id="full_regression", title="全回归测试用例", summary=updated[:500])
+                                        _archive_msg = "，已归档到全回归用例"
+                                st.success((_get_text(T, "run_tab.run_success") or "生成完成") + _archive_msg)
                             else:
                                 st.session_state["last_run"] = {"result_str": out, "step_outputs": [], "excel_path": None, "quip_url": None, "sheets_url": None, "timestamp": "", "txt_path": ""}
                                 st.session_state["last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
                                 st.session_state["last_demand_full"] = demand
-                            st.success(_get_text(T, "run_tab.run_success") or "生成完成")
+                                st.success(_get_text(T, "run_tab.run_success") or "生成完成")
 
         if st.session_state.get("last_run"):
             r = st.session_state["last_run"]
@@ -413,7 +446,13 @@ def main():
                     with st.expander(label, expanded=False):
                         content = e.get("content", "") or e.get("summary", "")
                         sid = e.get("source_id", "")
-                        src = f"{base}/{sid}" if sid and len(sid) >= 10 else sid
+                        src_type = e.get("source_type", "")
+                        if src_type == TEST_CASES_SOURCE_TYPE:
+                            src = "导入（Excel/CSV/粘贴）"
+                        elif sid and len(sid) >= 10:
+                            src = f"{base}/{sid}"
+                        else:
+                            src = sid or "-"
                         st.caption(f"来源: {src}")
                         st.markdown(content[:2000] + ("..." if len(content) > 2000 else ""))
                 with col_del:
@@ -502,6 +541,63 @@ def main():
                     st.error(str(ex))
             else:
                 st.error("请填写文档链接")
+
+        st.markdown(_get_text(T, "memory_tab.test_cases_section") or "方式三：导入全回归测试用例")
+        st.caption(_get_text(T, "memory_tab.test_cases_caption") or "从 Quip 链接拉取、上传文件或粘贴内容，Agent 将参考既有用例理解项目。")
+        test_cases_quip_url = st.text_input(
+            "Quip 文档链接",
+            placeholder=_get_text(T, "memory_tab.test_cases_quip_placeholder") or "https://quip.com/xxx/全回归用例",
+            key="test_cases_quip_url",
+            label_visibility="collapsed",
+        )
+        if st.button(_get_text(T, "memory_tab.test_cases_from_quip_btn") or "从该 Quip 文档导入", key="mem_import_test_cases_quip"):
+            if test_cases_quip_url and test_cases_quip_url.strip():
+                os.environ["QUIP_ACCESS_TOKEN"] = quip_for_import or os.getenv("QUIP_ACCESS_TOKEN", "")
+                if not os.environ.get("QUIP_ACCESS_TOKEN"):
+                    st.warning("请先填写上方 Quip Token")
+                else:
+                    try:
+                        content, doc_title = load_demand_from_quip(test_cases_quip_url.strip(), return_title=True)
+                        add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title=doc_title or "全回归测试用例", summary=content[:500])
+                        st.success(f"已导入「{doc_title or '全回归'}」，Agent 将参考既有用例。")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"拉取失败: {ex}")
+            else:
+                st.error("请填写 Quip 文档链接")
+        test_cases_file = st.file_uploader(
+            _get_text(T, "memory_tab.test_cases_upload_placeholder") or "上传文件",
+            type=["xlsx", "xls", "csv", "txt"],
+            key="test_cases_upload",
+            label_visibility="collapsed",
+        )
+        test_cases_paste = st.text_area(
+            _get_text(T, "memory_tab.test_cases_paste_placeholder") or "或粘贴内容",
+            placeholder=_get_text(T, "memory_tab.test_cases_paste_placeholder") or "表格（| 分隔）或纯文本",
+            key="test_cases_paste",
+            height=100,
+            label_visibility="collapsed",
+        )
+        if st.button(_get_text(T, "memory_tab.test_cases_import_btn") or "导入测试用例", key="mem_import_test_cases"):
+            content = ""
+            if test_cases_file:
+                try:
+                    content, rows = parse_test_cases_file(test_cases_file)
+                    if not content.strip():
+                        st.warning("文件内容为空")
+                    else:
+                        add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title="全回归测试用例", summary=content[:500])
+                        st.success(f"已导入 {rows} 行，Agent 将参考既有用例。")
+                        st.rerun()
+                except Exception as ex:
+                    st.error(f"解析失败: {ex}")
+            elif test_cases_paste and test_cases_paste.strip():
+                content = test_cases_paste.strip()
+                add_entry(TEST_CASES_SOURCE_TYPE, content, source_id="full_regression", title="全回归测试用例", summary=content[:500])
+                st.success("已导入，Agent 将参考既有用例。")
+                st.rerun()
+            else:
+                st.error("请上传文件或粘贴内容")
 
         st.divider()
         with st.expander(_get_text(T, "memory_tab.memory_summary_section") or "项目记忆摘要（高级）", expanded=False):

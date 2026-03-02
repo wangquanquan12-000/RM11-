@@ -28,6 +28,7 @@ run_tab:
   gemini_quota_url: "https://aistudio.google.com/rate-limit"
   gemini_quota_help: "在 Google AI Studio 查看用量与限额（新开页）"
   save_defaults_btn: "保存到本地（下次无需再填）"
+  save_defaults_help: "仅限本机；共享电脑建议用环境变量"
   save_success: "已保存到本地"
   export_quip: "导出到 Quip"
   export_quip_target_label: "Quip 目标文档（可选）"
@@ -51,6 +52,8 @@ run_tab:
   quip_doc_label: "打开 Quip 文档"
   google_sheets_label: "打开 Google 表格"
   result_saved: "完整结果已保存"
+  auto_archive_label: "生成后自动归档到全回归用例"
+  auto_archive_help: "将本次生成的新用例追加到项目记忆中的全回归用例，供下次生成时参考。"
 
 agents_tab:
   section_title: "编辑 Agent 与 Task"
@@ -71,6 +74,13 @@ memory_tab:
   filter_hint: "仅导入需求类文档，自动过滤测试用例、UI走查、周报等。"
   single_label: "文档链接"
   single_placeholder: "https://quip.com/xxx"
+  test_cases_section: "方式三：导入全回归测试用例"
+  test_cases_caption: "从 Quip 链接拉取、上传文件或粘贴内容，Agent 将参考既有用例理解项目。"
+  test_cases_quip_placeholder: "https://quip.com/xxx/全回归用例（仅读取，不修改 Quip）"
+  test_cases_from_quip_btn: "从该 Quip 文档导入"
+  test_cases_upload_placeholder: "上传 .xlsx / .csv / .txt"
+  test_cases_paste_placeholder: "或粘贴测试用例内容（表格 | 分隔、纯文本）"
+  test_cases_import_btn: "导入测试用例"
   memory_summary_section: "项目记忆摘要（高级）"
   memory_text_label: "内容"
 

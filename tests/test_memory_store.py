@@ -90,3 +90,17 @@ def test_list_for_browse():
     assert isinstance(entries, list)
     entries2 = ms.list_for_browse(source_type_filter="quip_folder", limit=5)
     assert all(e.get("source_type") == "quip_folder" for e in entries2)
+
+
+def test_test_cases_in_agent_context():
+    ms.add_entry(ms.TEST_CASES_SOURCE_TYPE, "TC001 | 登录 | 正常流程", source_id="full_regression", title="全回归")
+    s = ms.get_recent_for_agent(limit=5, demand_only=True, include_test_cases=True)
+    assert isinstance(s, str)
+    assert "TC001" in s or "全回归" in s
+
+
+def test_get_entry_content():
+    ms.add_entry(ms.TEST_CASES_SOURCE_TYPE, "content_xyz", source_id="full_regression", title="T")
+    c = ms.get_entry_content(ms.TEST_CASES_SOURCE_TYPE, "full_regression")
+    assert c == "content_xyz"
+    assert ms.get_entry_content("nonexistent", "x") is None

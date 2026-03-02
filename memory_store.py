@@ -14,6 +14,8 @@ MEMORY_DB_PATH = os.path.join(CONFIG_DIR, "memory.db")
 
 # 视为「需求文档」的 source_type，供 Agent 使用
 DEMAND_SOURCE_TYPES = ("quip_folder", "quip_single")
+# 测试用例：导入后供 Agent 理解项目既有用例
+TEST_CASES_SOURCE_TYPE = "test_cases"
 
 
 def _get_conn():
@@ -164,21 +166,28 @@ def get_recent_for_agent(
     limit: int = 10,
     max_content_len: int = 3000,
     demand_only: bool = True,
+    include_test_cases: bool = False,
 ) -> str:
     """获取供 Agent 使用的需求文档上下文。
-    demand_only=True 时只取需求文档（quip_folder, quip_single），排除 run_summary。
-    按 source_id 去重取最新，保证干净。"""
+    demand_only=True 时只取需求文档（quip_folder, quip_single）。
+    include_test_cases=True 时额外包含 test_cases 类型的全回归用例。"""
     conn = _get_conn()
     _ensure_tables(conn)
-    if demand_only:
-        placeholders = ",".join(["?"] * len(DEMAND_SOURCE_TYPES))
+    if demand_only and not include_test_cases:
+        types = DEMAND_SOURCE_TYPES
+    elif include_test_cases:
+        types = (*DEMAND_SOURCE_TYPES, TEST_CASES_SOURCE_TYPE)
+    else:
+        types = None
+    if types:
+        placeholders = ",".join(["?"] * len(types))
         rows = conn.execute(
             f"""SELECT id, created_at, source_type, source_id, title, content, summary
                 FROM memory_entries
                 WHERE source_type IN ({placeholders})
                 ORDER BY created_at DESC
                 LIMIT ?""",
-            (*DEMAND_SOURCE_TYPES, limit * 2),  # 多取以便去重
+            (*types, limit * 2),
         ).fetchall()
     else:
         rows = conn.execute(
@@ -212,19 +221,20 @@ def get_recent_for_agent(
     return "\n\n---\n\n".join(parts)
 
 
-def get_all_demands_full_for_chat(limit: int = 30, max_total_chars: int = 80000) -> str:
-    """获取全部需求文档的完整内容，供与 Agent 沟通时使用。Agent 可理解全部需求。
-    按 source_id 去重取最新，拼接完整 content。"""
+def get_all_demands_full_for_chat(limit: int = 30, max_total_chars: int = 80000, include_test_cases: bool = True) -> str:
+    """获取全部需求文档与测试用例的完整内容，供与 Agent 沟通时使用。
+    include_test_cases=True 时包含已导入的全回归测试用例。"""
     conn = _get_conn()
     _ensure_tables(conn)
-    placeholders = ",".join(["?"] * len(DEMAND_SOURCE_TYPES))
+    types = (*DEMAND_SOURCE_TYPES, TEST_CASES_SOURCE_TYPE) if include_test_cases else DEMAND_SOURCE_TYPES
+    placeholders = ",".join(["?"] * len(types))
     rows = conn.execute(
         f"""SELECT id, created_at, source_type, source_id, title, content, summary
             FROM memory_entries
             WHERE source_type IN ({placeholders})
             ORDER BY created_at DESC
             LIMIT ?""",
-        (*DEMAND_SOURCE_TYPES, limit * 2),
+        (*types, limit * 2),
     ).fetchall()
     conn.close()
     entries = [_row_to_dict(r) for r in rows]
@@ -253,6 +263,18 @@ def get_all_demands_full_for_chat(limit: int = 30, max_total_chars: int = 80000)
         if total >= max_total_chars:
             break
     return "\n\n---\n\n".join(parts)
+
+
+def get_entry_content(source_type: str, source_id: str) -> str | None:
+    """按 source_type + source_id 获取条目的 content。不存在则返回 None。"""
+    conn = _get_conn()
+    _ensure_tables(conn)
+    row = conn.execute(
+        "SELECT content FROM memory_entries WHERE source_type = ? AND source_id = ?",
+        (source_type, source_id),
+    ).fetchone()
+    conn.close()
+    return row["content"] if row else None
 
 
 def list_for_browse(

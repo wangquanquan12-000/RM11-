@@ -817,6 +817,64 @@ def chat_with_document_agent(
     return str(out).strip() if out else ""
 
 
+def parse_test_cases_file(file_or_path) -> tuple[str, int]:
+    """从 Excel/CSV/TXT 解析测试用例为可读文本，供导入到项目记忆。返回 (content, rows_count)。"""
+    if hasattr(file_or_path, "read"):
+        data = file_or_path.read()
+        name = getattr(file_or_path, "name", "") or ""
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+    else:
+        with open(file_or_path, "rb") as f:
+            data = f.read()
+        name = os.path.basename(str(file_or_path))
+    ext = (name or "").lower().split(".")[-1] if "." in (name or "") else ""
+    rows_count = 0
+    lines: list[str] = []
+    if ext in ("xlsx", "xls"):
+        try:
+            import openpyxl
+            from io import BytesIO
+            wb = openpyxl.load_workbook(BytesIO(data), read_only=True)
+            for sheet in wb.worksheets:
+                for row in sheet.iter_rows(values_only=True):
+                    cells = [str(c or "").strip() for c in (row or [])]
+                    if any(cells):
+                        lines.append(" | ".join(cells))
+                        rows_count += 1
+            wb.close()
+        except ImportError:
+            raise ValueError("解析 Excel 需安装 openpyxl：pip install openpyxl")
+    elif ext == "csv" or (not ext and b"," in data[:500]):
+        import csv
+        from io import StringIO
+        text = data.decode("utf-8-sig", errors="replace")
+        for row in csv.reader(StringIO(text)):
+            if row:
+                lines.append(" | ".join(str(c or "").strip() for c in row))
+                rows_count += 1
+    else:
+        text = data.decode("utf-8-sig", errors="replace")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped:
+                lines.append(stripped)
+                rows_count += 1
+    content = "\n".join(lines)
+    return content, rows_count
+
+
+def tables_to_text(tables: list[list[list[str]]]) -> str:
+    """将解析出的表格转为可读文本（| 分隔），供归档到项目记忆。"""
+    lines: list[str] = []
+    for tbl in tables:
+        for row in tbl:
+            lines.append(" | ".join(str(c or "").strip() for c in row))
+        if tbl:
+            lines.append("")
+    return "\n".join(lines).strip()
+
+
 def _parse_markdown_tables(text: str) -> list[list[list[str]]]:
     """从文本中解析所有 Markdown 表格，返回 [表格1行列表, 表格2行列表, ...]，每表为 [row1, row2, ...]，每行为 [cell, ...]。"""
     tables = []
@@ -1024,7 +1082,7 @@ def get_project_context_for_agent(include_store: bool = True) -> str:
         return md_ctx
     try:
         from memory_store import get_recent_for_agent
-        store_ctx = get_recent_for_agent(limit=10, demand_only=True)
+        store_ctx = get_recent_for_agent(limit=10, demand_only=True, include_test_cases=True)
         if store_ctx:
             md_ctx = (md_ctx + "\n\n【近期需求与产出记录】\n" + store_ctx).strip()
     except ImportError:

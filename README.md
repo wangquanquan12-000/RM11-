@@ -47,6 +47,12 @@ python3 -m streamlit run app_ui.py --server.port 8501
 | `requirements.txt` | Python 依赖 |
 | `run_app.sh` / `run_app.bat` | 本地启动脚本 |
 
+## 凭证安全
+
+- **本地**：点击「保存到本地」时，Token 与 Key 会写入 `config/defaults.json`（已 gitignore），并设置为仅当前用户可读写。
+- **共享电脑**：建议使用环境变量 `QUIP_ACCESS_TOKEN`、`GEMINI_API_KEY`，不要保存到本地。
+- **云端部署**：在 Streamlit Cloud 的 Settings → Secrets 中配置，切勿将凭证提交到仓库。
+
 ## 使用说明
 
 - **运行流水线**：填写 Quip 文档链接与 Token、Gemini Key，点击运行即可看到 Agent 沟通过程与结果，并下载 Excel 或打开 Quip/Sheets 链接。
