@@ -143,6 +143,10 @@ def main():
     }
     /* 步骤标题 */
     .step-label { font-size: 0.8rem; font-weight: 600; color: #0d9488; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.35rem; }
+    .step-label + .step-label { margin-top: 1rem; }
+    .run-section { margin-top: 1rem; }
+    .export-row { margin-bottom: 0.5rem; }
+    .stCheckbox { margin-bottom: 0.25rem; }
     .stTabs [data-baseweb="tab-list"] {
         gap: 0.25rem; margin-bottom: 1rem;
         border-bottom: 1px solid #e2e8f0;
@@ -222,14 +226,23 @@ def main():
                 )
             _model_opts = [m[0] for m in GEMINI_MODELS]
             _model_idx = next((i for i, (k, _) in enumerate(GEMINI_MODELS) if k == (defaults.get("gemini_model") or "gemini-2.5-flash-lite")), 0)
-            gemini_model = st.selectbox(
-                _get_text(T, "run_tab.gemini_model_label") or "Gemini 模型",
-                options=_model_opts,
-                index=_model_idx,
-                format_func=lambda x: dict(GEMINI_MODELS).get(x, x),
-                help=_get_text(T, "run_tab.gemini_model_help") or "免费推荐：2.5 Flash-Lite；高质量：2.5 Flash。",
-                key="run_gemini_model",
-            )
+            _model_col, _quota_col = st.columns([3, 1])
+            with _model_col:
+                gemini_model = st.selectbox(
+                    _get_text(T, "run_tab.gemini_model_label") or "Gemini 模型",
+                    options=_model_opts,
+                    index=_model_idx,
+                    format_func=lambda x: dict(GEMINI_MODELS).get(x, x),
+                    help=_get_text(T, "run_tab.gemini_model_help") or "免费推荐：2.5 Flash-Lite；高质量：2.5 Flash。",
+                    key="run_gemini_model",
+                )
+            with _quota_col:
+                _quota_url = _get_text(T, "run_tab.gemini_quota_url") or "https://aistudio.google.com/rate-limit"
+                st.link_button(
+                    _get_text(T, "run_tab.gemini_quota_btn") or "查看剩余额度",
+                    _quota_url,
+                    help=_get_text(T, "run_tab.gemini_quota_help") or "在 Google AI Studio 查看用量与限额（新开页）",
+                )
             if st.button(_get_text(T, "run_tab.save_defaults_btn") or "保存到本地（下次无需再填）", key="run_save_defaults"):
                 _save_defaults(quip_token or defaults["quip_token"], gemini_key or defaults["gemini_key"], gemini_model)
                 st.success(_get_text(T, "run_tab.save_success") or "已保存到本地")

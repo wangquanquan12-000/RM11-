@@ -2,8 +2,8 @@
 # 修改后刷新页面即可看到效果
 
 app:
-  title: "需求 → 测试用例流水线"
-  page_title: "需求 → 测试用例流水线"
+  title: "需求 → 测试用例"
+  page_title: "需求 → 测试用例"
 
 tabs:
   run: "生成用例"
@@ -24,6 +24,9 @@ run_tab:
   gemini_key_help: "用于驱动四个 Agent"
   gemini_model_label: "Gemini 模型"
   gemini_model_help: "实验用免费模型（如 1.5-flash），正式导出用付费模型。"
+  gemini_quota_btn: "查看剩余额度"
+  gemini_quota_url: "https://aistudio.google.com/rate-limit"
+  gemini_quota_help: "在 Google AI Studio 查看用量与限额（新开页）"
   save_defaults_btn: "保存到本地（下次无需再填）"
   save_success: "已保存到本地"
   export_quip: "导出到 Quip"
