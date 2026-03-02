@@ -411,7 +411,7 @@ def _get_crew(stream: bool = False) -> Crew:
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     if not gemini_api_key:
         raise ValueError("ERROR: GEMINI_API_KEY 未设置，请设置环境变量后重试。")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=gemini_api_key,
@@ -731,7 +731,7 @@ def _get_crew_with_config(
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     if not gemini_api_key:
         raise ValueError("ERROR: GEMINI_API_KEY 未设置。")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=gemini_api_key,
@@ -760,7 +760,7 @@ def chat_with_document_agent(
     if not gemini_api_key:
         raise ValueError("GEMINI_API_KEY 未设置，请先配置。")
 
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=gemini_api_key,
@@ -924,18 +924,31 @@ def _export_to_quip_existing(
     table_html = _tables_to_html(tables)
     body = f"<h2>{html_lib.escape(demand_title)}</h2><p>以下为自动生成的测试用例。</p>{table_html}"
     url = f"{QUIP_API_BASE}/threads/edit-document"
-    data = urllib.parse.urlencode({
+    payload = {
         "thread_id": thread_id,
         "content": body,
         "format": "html",
-        "location": "0",  # 0 = APPEND, 追加到文档末尾
-    }).encode()
-    req = urllib.request.Request(url, data=data, method="POST", headers={"Authorization": f"Bearer {token}", "Content-Type": "application/x-www-form-urlencoded"})
+        "location": 0,  # 0 = APPEND, 追加到文档末尾（仅文档支持，电子表格需用 section_id）
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             _ = json.loads(resp.read().decode())
         base = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
         return f"{base}/{thread_id}"
+    except urllib.error.HTTPError as e:
+        body_err = e.read().decode("utf-8", errors="replace")[:500]
+        print(f"导出到指定 Quip 文档失败: HTTP {e.code} - {body_err}", file=sys.stderr)
+        return None
     except Exception as e:
         print(f"导出到指定 Quip 文档失败: {e}", file=sys.stderr)
         return None
@@ -1278,12 +1291,19 @@ def main() -> int:
         action="store_true",
         help="导出到 Google 表格（需 GOOGLE_SHEETS_CREDENTIALS_JSON 环境变量）。",
     )
+    parser.add_argument(
+        "--export-quip-target",
+        default=None,
+        metavar="URL",
+        help="导出到指定 Quip 文档（追加需求标题+用例到该文档末尾）。可传 URL 或 thread_id。",
+    )
     args = parser.parse_args()
 
+    demand_title = None
     if args.quip:
-        demand = load_demand_from_quip(args.quip)
+        demand, demand_title = load_demand_from_quip(args.quip, return_title=True)
         tid = _extract_quip_thread_id(args.quip)
-        print(f"已从 Quip 文档加载需求: thread_id={tid}")
+        print(f"已从 Quip 文档加载需求: thread_id={tid}, title={demand_title[:50] if demand_title else ''}...")
     else:
         file_path = args.file
         if file_path is None and os.path.isfile(DEFAULT_REQUIREMENT_FILE):
@@ -1294,6 +1314,7 @@ def main() -> int:
         else:
             print("使用环境变量 DEMAND 或内置默认需求")
 
+    do_export_quip = args.export_quip or bool(args.export_quip_target)
     try:
         run_pipeline(
             demand,
@@ -1301,8 +1322,10 @@ def main() -> int:
             mock=args.mock,
             local=args.local,
             export_excel=not args.no_excel,
-            export_quip=args.export_quip,
+            export_quip=do_export_quip,
             export_sheets=args.export_sheets,
+            export_quip_target=(args.export_quip_target or "").strip() or None,
+            demand_title=demand_title,
         )
         return 0
     except Exception as e:

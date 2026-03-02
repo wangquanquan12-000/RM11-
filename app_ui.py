@@ -68,7 +68,7 @@ GEMINI_MODELS = [
 def _load_defaults():
     """从环境变量或 config/defaults.json 读取默认 Token / Key / 模型。"""
     import json
-    out = {"quip_token": "", "gemini_key": "", "gemini_model": "gemini-1.5-flash"}
+    out = {"quip_token": "", "gemini_key": "", "gemini_model": "gemini-2.5-flash-lite"}
     out["quip_token"] = os.getenv("QUIP_ACCESS_TOKEN", "")
     out["gemini_key"] = os.getenv("GEMINI_API_KEY", "")
     out["gemini_model"] = os.getenv("GEMINI_MODEL", "")
@@ -78,11 +78,11 @@ def _load_defaults():
                 data = json.load(f)
                 out["quip_token"] = out["quip_token"] or data.get("quip_token", "")
                 out["gemini_key"] = out["gemini_key"] or data.get("gemini_key", "")
-                out["gemini_model"] = out["gemini_model"] or data.get("gemini_model", "gemini-1.5-flash")
+                out["gemini_model"] = out["gemini_model"] or data.get("gemini_model", "gemini-2.5-flash-lite")
         except Exception:
             pass
     if not out["gemini_model"]:
-        out["gemini_model"] = "gemini-1.5-flash"
+        out["gemini_model"] = "gemini-2.5-flash-lite"
     return out
 
 
@@ -126,17 +126,23 @@ def main():
     st.set_page_config(page_title=page_title, layout="wide", initial_sidebar_state="collapsed")
     st.markdown("""
     <style>
-    /* 优化 UI：简洁专业 */
-    .main .block-container { padding-top: 1.2rem; padding-bottom: 2.5rem; max-width: 900px; }
+    /* 布局与层次 */
+    .main .block-container { padding-top: 1.2rem; padding-bottom: 2.5rem; max-width: 920px; }
     h1 {
-        font-size: 1.5rem !important; font-weight: 600 !important;
-        color: #0f172a !important; margin-bottom: 0.8rem !important;
+        font-size: 1.45rem !important; font-weight: 600 !important;
+        color: #0f172a !important; margin-bottom: 0.6rem !important;
         letter-spacing: -0.02em; line-height: 1.3;
     }
     h2 {
-        font-size: 1.05rem !important; font-weight: 500 !important;
-        color: #475569 !important; margin-top: 1.2rem !important; margin-bottom: 0.6rem !important;
+        font-size: 1rem !important; font-weight: 600 !important;
+        color: #334155 !important; margin-top: 1.25rem !important; margin-bottom: 0.5rem !important;
     }
+    h3 {
+        font-size: 0.95rem !important; font-weight: 500 !important;
+        color: #64748b !important; margin-top: 0.75rem !important; margin-bottom: 0.4rem !important;
+    }
+    /* 步骤标题 */
+    .step-label { font-size: 0.8rem; font-weight: 600; color: #0d9488; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.35rem; }
     .stTabs [data-baseweb="tab-list"] {
         gap: 0.25rem; margin-bottom: 1rem;
         border-bottom: 1px solid #e2e8f0;
@@ -157,22 +163,19 @@ def main():
         transition: opacity 0.15s;
     }
     .stButton > button:hover { opacity: 0.9; }
+    /* 主按钮更突出 */
+    .main div[data-testid="column"] + div[data-testid="column"] .stButton > button[kind="primary"],
+    .main .stButton > button[kind="primary"] { font-weight: 600; }
     [data-testid="stMetricValue"] { font-weight: 600; }
     .stTextInput > div > div { border-radius: 8px; }
     .stSuccess, .stInfo, .stWarning, .stError {
         border-radius: 8px; padding: 0.75rem 1rem;
     }
     p { line-height: 1.6; }
-    /* 项目记忆：搜索区与结果卡片 */
-    div[data-testid="stExpander"] summary {
-        font-size: 0.9rem; padding: 0.6rem 0.75rem;
-    }
+    div[data-testid="stExpander"] summary { font-size: 0.9rem; padding: 0.6rem 0.75rem; }
     .stSelectbox > div { border-radius: 8px; }
-    /* 信息提示框更柔和 */
     [data-testid="stAlert"] { border-radius: 8px; }
-    /* 分隔线 */
-    hr { margin: 1.5rem 0; border-color: #e2e8f0; opacity: 0.8; }
-    /* 隐藏 Streamlit 默认装饰 */
+    hr { margin: 1.25rem 0; border-color: #e2e8f0; opacity: 0.8; }
     #MainMenu { visibility: hidden; }
     footer { visibility: hidden; }
     header { visibility: hidden; }
@@ -181,69 +184,88 @@ def main():
     st.title(app_title)
     defaults = _load_defaults()
     tab_run, tab_agents, tab_memory, tab_chat = st.tabs([
-        _get_text(T, "tabs.run") or "运行流水线",
+        _get_text(T, "tabs.run") or "生成用例",
         _get_text(T, "tabs.agents") or "编辑 Agent",
         _get_text(T, "tabs.memory") or "项目记忆",
-        _get_text(T, "tabs.chat") or "与文档 Agent 沟通",
+        _get_text(T, "tabs.chat") or "文档问答",
     ])
 
     # ---------- 运行流水线 ----------
     with tab_run:
-        st.subheader(_get_text(T, "run_tab.section_config") or "输入与配置")
+        st.caption(_get_text(T, "run_tab.page_caption") or "从 Quip 需求文档生成测试用例，支持导出 Excel / Quip / Google 表格。")
+
+        st.markdown('<p class="step-label">① 需求文档</p>', unsafe_allow_html=True)
         quip_url = st.text_input(
-            _get_text(T, "run_tab.quip_url_label") or "Quip 文档链接或 thread_id",
-            placeholder=_get_text(T, "run_tab.quip_url_placeholder") or "https://quip.com/xxx 或 thread_id",
+            _get_text(T, "run_tab.quip_url_label") or "需求文档链接",
+            placeholder=_get_text(T, "run_tab.quip_url_placeholder") or "粘贴 Quip 文档链接或 thread_id",
+            key="run_quip_url",
+            label_visibility="collapsed",
         )
-        col1, col2 = st.columns(2)
-        with col1:
-            quip_token = st.text_input(
-                _get_text(T, "run_tab.quip_token_label") or "Quip Access Token",
-                value=defaults["quip_token"], type="password",
-                help=_get_text(T, "run_tab.quip_token_help") or "可从 https://quip.com/dev/token 生成",
-            )
-        with col2:
-            gemini_key = st.text_input(
-                _get_text(T, "run_tab.gemini_key_label") or "Gemini API Key",
-                value=defaults["gemini_key"], type="password",
-                help=_get_text(T, "run_tab.gemini_key_help") or "用于驱动四个 Agent",
-            )
-        _model_opts = [m[0] for m in GEMINI_MODELS]
-        _model_idx = next((i for i, (k, _) in enumerate(GEMINI_MODELS) if k == (defaults.get("gemini_model") or "gemini-1.5-flash")), 0)
-        gemini_model = st.selectbox(
-            _get_text(T, "run_tab.gemini_model_label") or "Gemini 模型",
-            options=_model_opts,
-            index=_model_idx,
-            format_func=lambda x: dict(GEMINI_MODELS).get(x, x),
-            help=_get_text(T, "run_tab.gemini_model_help") or "实验用免费模型（如 1.5-flash），正式导出用付费模型。",
-        )
-        if st.button(_get_text(T, "run_tab.save_defaults_btn_full") or "保存为默认 Token/Key（仅写本地 config/defaults.json）"):
-            _save_defaults(quip_token or defaults["quip_token"], gemini_key or defaults["gemini_key"], gemini_model)
-            st.success(_get_text(T, "run_tab.save_success") or "已保存到本地默认值")
-            st.rerun()
+        if not quip_url or not quip_url.strip():
+            st.caption(_get_text(T, "run_tab.quip_url_hint") or "示例：https://quip.com/xxx 或 12 位 thread_id")
 
-        export_quip = st.checkbox(_get_text(T, "run_tab.export_quip") or "导出到 Quip", value=False)
+        with st.expander(_get_text(T, "run_tab.credentials_expander") or "② 账号与模型（已保存可跳过）", expanded=not (defaults.get("quip_token") and defaults.get("gemini_key"))):
+            col1, col2 = st.columns(2)
+            with col1:
+                quip_token = st.text_input(
+                    _get_text(T, "run_tab.quip_token_label") or "Quip Access Token",
+                    value=defaults["quip_token"], type="password",
+                    help=_get_text(T, "run_tab.quip_token_help") or "从 Quip 获取，用于拉取需求文档",
+                    key="run_quip_token",
+                )
+            with col2:
+                gemini_key = st.text_input(
+                    _get_text(T, "run_tab.gemini_key_label") or "Gemini API Key",
+                    value=defaults["gemini_key"], type="password",
+                    help=_get_text(T, "run_tab.gemini_key_help") or "用于驱动四个 Agent 生成用例",
+                    key="run_gemini_key",
+                )
+            _model_opts = [m[0] for m in GEMINI_MODELS]
+            _model_idx = next((i for i, (k, _) in enumerate(GEMINI_MODELS) if k == (defaults.get("gemini_model") or "gemini-2.5-flash-lite")), 0)
+            gemini_model = st.selectbox(
+                _get_text(T, "run_tab.gemini_model_label") or "Gemini 模型",
+                options=_model_opts,
+                index=_model_idx,
+                format_func=lambda x: dict(GEMINI_MODELS).get(x, x),
+                help=_get_text(T, "run_tab.gemini_model_help") or "免费推荐：2.5 Flash-Lite；高质量：2.5 Flash。",
+                key="run_gemini_model",
+            )
+            if st.button(_get_text(T, "run_tab.save_defaults_btn") or "保存到本地（下次无需再填）", key="run_save_defaults"):
+                _save_defaults(quip_token or defaults["quip_token"], gemini_key or defaults["gemini_key"], gemini_model)
+                st.success(_get_text(T, "run_tab.save_success") or "已保存到本地")
+                st.rerun()
+
+        st.markdown('<p class="step-label">③ 导出方式</p>', unsafe_allow_html=True)
+        ex_col1, ex_col2, ex_col3 = st.columns(3)
+        with ex_col1:
+            st.caption("Excel：默认生成并可下载")
+        with ex_col2:
+            export_quip = st.checkbox(_get_text(T, "run_tab.export_quip") or "导出到 Quip", value=False, key="run_export_quip")
+        with ex_col3:
+            export_sheets = st.checkbox(_get_text(T, "run_tab.export_sheets") or "导出到 Google 表格", value=False, key="run_export_sheets")
         export_quip_target = st.text_input(
-            _get_text(T, "run_tab.export_quip_target_label") or "导出目标文档链接（可选，填写则追加到该文档，并自动写入需求标题+用例）",
-            placeholder=_get_text(T, "run_tab.export_quip_target_placeholder") or "https://quip.com/xxx 留空则新建文档",
+            _get_text(T, "run_tab.export_quip_target_label") or "Quip 目标文档（可选）",
+            placeholder=_get_text(T, "run_tab.export_quip_target_placeholder") or "留空则新建文档；填写则追加到该文档末尾",
             key="export_quip_target",
+            label_visibility="collapsed",
         )
-        export_sheets = st.checkbox(_get_text(T, "run_tab.export_sheets") or "导出到 Google 表格", value=False)
 
-        if st.button(_get_text(T, "run_tab.run_btn") or "运行流水线", type="primary"):
+        st.markdown('<p class="step-label">④ 执行</p>', unsafe_allow_html=True)
+        if st.button(_get_text(T, "run_tab.run_btn") or "生成测试用例", type="primary", use_container_width=True, key="run_pipeline_btn"):
             if not quip_url or not quip_url.strip():
-                st.error(_get_text(T, "run_tab.quip_url_required") or "请填写 Quip 文档链接或 thread_id")
+                st.error(_get_text(T, "run_tab.quip_url_required") or "请先填写需求文档链接")
             else:
                 os.environ["QUIP_ACCESS_TOKEN"] = quip_token or os.environ.get("QUIP_ACCESS_TOKEN", "")
                 os.environ["GEMINI_API_KEY"] = gemini_key or os.environ.get("GEMINI_API_KEY", "")
-                os.environ["GEMINI_MODEL"] = gemini_model or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+                os.environ["GEMINI_MODEL"] = gemini_model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
                 if not os.environ.get("GEMINI_API_KEY"):
-                    st.error(_get_text(T, "run_tab.gemini_required") or "请填写 Gemini API Key 或保存默认值")
+                    st.error(_get_text(T, "run_tab.gemini_required") or "请填写 Gemini API Key 或先在「账号与模型」中保存")
                 else:
-                    with st.spinner(_get_text(T, "run_tab.run_spinner") or "正在从 Quip 拉取需求并运行四 Agent…"):
+                    with st.spinner(_get_text(T, "run_tab.run_spinner") or "正在拉取需求并生成用例…"):
                         try:
                             demand, demand_title = load_demand_from_quip(quip_url.strip(), return_title=True)
                         except Exception as e:
-                            st.error(f"{_get_text(T, 'run_tab.quip_fetch_fail') or '拉取 Quip 文档失败'}: {e}")
+                            st.error(f"{_get_text(T, 'run_tab.quip_fetch_fail') or '拉取文档失败'}: {e}")
                             demand = None
                         if demand:
                             try:
@@ -258,7 +280,7 @@ def main():
                                     return_details=True,
                                 )
                             except Exception as e:
-                                st.error(f"{_get_text(T, 'run_tab.pipeline_fail') or '流水线执行失败'}: {e}")
+                                st.error(f"{_get_text(T, 'run_tab.pipeline_fail') or '执行失败'}: {e}")
                                 raise
                             if isinstance(out, dict):
                                 st.session_state["last_run"] = out
@@ -268,52 +290,59 @@ def main():
                                 st.session_state["last_run"] = {"result_str": out, "step_outputs": [], "excel_path": None, "quip_url": None, "sheets_url": None, "timestamp": "", "txt_path": ""}
                                 st.session_state["last_demand_snippet"] = demand[:500] + ("..." if len(demand) > 500 else "")
                                 st.session_state["last_demand_full"] = demand
-                            st.success(_get_text(T, "run_tab.run_success") or "流水线执行完成")
+                            st.success(_get_text(T, "run_tab.run_success") or "生成完成")
 
         if st.session_state.get("last_run"):
             r = st.session_state["last_run"]
-            st.subheader(_get_text(T, "run_tab.section_steps") or "Agent 沟通过程")
-            step_outputs = r.get("step_outputs") or []
-            if step_outputs:
-                for i, step in enumerate(step_outputs, 1):
-                    with st.expander(f"步骤 {i}: {step.get('task', '')} — {step.get('agent', '')}", expanded=(i == len(step_outputs))):
-                        st.markdown(step.get("content", ""))
-            else:
-                st.info(_get_text(T, "run_tab.no_step_output") or "本次未采集到分步输出（可能未使用 stream），下方为最终结果。")
-
-            st.subheader(_get_text(T, "run_tab.section_result") or "最终结果")
-            st.markdown(r.get("result_str", ""))
-
-            st.subheader(_get_text(T, "run_tab.section_links") or "表格链接")
+            # 先展示「输出与下载」，最常用
+            st.subheader(_get_text(T, "run_tab.section_links") or "输出与下载")
             excel_path = r.get("excel_path")
             quip_link = r.get("quip_url")
             sheets_link = r.get("sheets_url")
             txt_path = r.get("txt_path", "")
-            if excel_path and os.path.isfile(excel_path):
-                with open(excel_path, "rb") as f:
-                    st.download_button(
-                        _get_text(T, "run_tab.download_excel") or "下载 Excel",
-                        f, file_name=os.path.basename(excel_path),
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-                st.caption(f"{_get_text(T, 'run_tab.excel_path_label') or '本地路径'}: `{excel_path}`")
-            else:
-                st.caption(_get_text(T, "run_tab.excel_not_found") or "未生成 Excel 或文件不存在")
-            if quip_link:
-                st.markdown(f"**{_get_text(T, 'run_tab.quip_doc_label') or 'Quip 文档'}**: [打开链接]({quip_link})")
-            if sheets_link:
-                st.markdown(f"**{_get_text(T, 'run_tab.google_sheets_label') or 'Google 表格'}**: [打开链接]({sheets_link})")
+            link_cols = st.columns([1, 1, 1])
+            with link_cols[0]:
+                if excel_path and os.path.isfile(excel_path):
+                    with open(excel_path, "rb") as f:
+                        st.download_button(
+                            _get_text(T, "run_tab.download_excel") or "📥 下载 Excel",
+                            f, file_name=os.path.basename(excel_path),
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_excel",
+                        )
+                else:
+                    st.caption(_get_text(T, "run_tab.excel_not_found") or "未生成 Excel")
+            with link_cols[1]:
+                if quip_link:
+                    st.markdown(f"[{_get_text(T, 'run_tab.quip_doc_label') or '打开 Quip 文档'}]({quip_link})")
+            with link_cols[2]:
+                if sheets_link:
+                    st.markdown(f"[{_get_text(T, 'run_tab.google_sheets_label') or '打开 Google 表格'}]({sheets_link})")
             if txt_path and os.path.isfile(txt_path):
                 st.caption(f"{_get_text(T, 'run_tab.result_saved') or '完整结果已保存'}: `{txt_path}`")
 
+            # 步骤与全文折叠展示
+            step_outputs = r.get("step_outputs") or []
+            with st.expander(_get_text(T, "run_tab.section_steps") or "查看 Agent 沟通过程", expanded=False):
+                if step_outputs:
+                    for i, step in enumerate(step_outputs, 1):
+                        with st.expander(f"步骤 {i}: {step.get('task', '')} — {step.get('agent', '')}", expanded=False):
+                            st.markdown(step.get("content", ""))
+                else:
+                    st.info(_get_text(T, "run_tab.no_step_output") or "本次未采集到分步输出。")
+
+            with st.expander(_get_text(T, "run_tab.section_result") or "查看最终结果全文", expanded=False):
+                st.markdown(r.get("result_str", ""))
+
     # ---------- 编辑 Agent ----------
     with tab_agents:
-        st.subheader(_get_text(T, "agents_tab.section_title") or "编辑四 Agent 定义与 Task")
+        st.subheader(_get_text(T, "agents_tab.section_title") or "编辑 Agent 与 Task")
+        st.caption(_get_text(T, "agents_tab.section_caption") or "修改角色、目标与任务描述后，点击底部「保存配置」生效；下次生成用例将使用新配置。")
         config = load_agents_config()
         if not config:
-            st.warning("未找到 config/agents.yaml 或 PyYAML 未安装；可在此编辑并保存为新配置。")
-            raw_yaml = st.text_area("agents.yaml 内容", height=400, placeholder="agents:\n  - id: ...\n    role: ...\n    goal: ...\n    backstory: |\n      ...")
-            if st.button("保存 agents.yaml"):
+            st.warning("未找到 config/agents.yaml 或 PyYAML 未安装；可在此编辑并保存。")
+            raw_yaml = st.text_area("agents.yaml 内容", height=400, placeholder="agents:\n  - id: ...\n    role: ...\n    goal: ...\n    backstory: |\n      ...", key="agents_raw_yaml")
+            if st.button("保存 agents.yaml", key="agents_save_raw"):
                 if raw_yaml.strip():
                     os.makedirs(CONFIG_DIR, exist_ok=True)
                     with open(AGENTS_CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -323,40 +352,43 @@ def main():
         else:
             agents = config.get("agents") or []
             tasks = config.get("tasks") or []
+            st.markdown("**Agent（角色）**")
             for i, a in enumerate(agents):
-                with st.expander(f"Agent: {a.get('role', a.get('id', ''))}", expanded=False):
-                    a_id = st.text_input("id", value=a.get("id", ""), key=f"agent_id_{i}")
+                with st.expander(f"Agent {i + 1}/{len(agents)}: {a.get('role', a.get('id', '未命名'))}", expanded=False):
+                    a_id = st.text_input("id", value=a.get("id", ""), key=f"agent_id_{i}", help="唯一标识，Task 中通过 agent_id 引用")
                     a_role = st.text_input("role", value=a.get("role", ""), key=f"agent_role_{i}")
-                    a_goal = st.text_area("goal", value=a.get("goal", ""), key=f"agent_goal_{i}", height=100)
-                    a_back = st.text_area("backstory", value=(a.get("backstory") or "").strip(), key=f"agent_back_{i}", height=200)
+                    a_goal = st.text_area("goal", value=a.get("goal", ""), key=f"agent_goal_{i}", height=80)
+                    a_back = st.text_area("backstory", value=(a.get("backstory") or "").strip(), key=f"agent_back_{i}", height=120)
                     a["id"], a["role"], a["goal"], a["backstory"] = a_id, a_role, a_goal, a_back
             st.divider()
+            st.markdown("**Task（任务）**")
             for i, t in enumerate(tasks):
-                with st.expander(f"Task: {t.get('id', '')} (agent: {t.get('agent_id', '')})", expanded=False):
+                with st.expander(f"Task {i + 1}/{len(tasks)}: {t.get('id', '')} ← {t.get('agent_id', '')}", expanded=False):
                     t_id = st.text_input("id", value=t.get("id", ""), key=f"task_id_{i}")
-                    t_agent_id = st.text_input("agent_id", value=t.get("agent_id", ""), key=f"task_agent_{i}")
-                    t_desc = st.text_area("description", value=(t.get("description") or "").strip(), key=f"task_desc_{i}", height=120)
+                    t_agent_id = st.text_input("agent_id", value=t.get("agent_id", ""), key=f"task_agent_{i}", help="对应上方某 Agent 的 id")
+                    t_desc = st.text_area("description", value=(t.get("description") or "").strip(), key=f"task_desc_{i}", height=100)
                     t_out = st.text_input("expected_output", value=t.get("expected_output", ""), key=f"task_out_{i}")
                     t["id"], t["agent_id"], t["description"], t["expected_output"] = t_id, t_agent_id, t_desc, t_out
-            if st.button("保存到 config/agents.yaml"):
+            if st.button(_get_text(T, "agents_tab.save_btn") or "保存配置到 config/agents.yaml", type="primary", key="agents_save_config"):
                 try:
                     import yaml
                     with open(AGENTS_CONFIG_PATH, "w", encoding="utf-8") as f:
                         yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-                    st.success("已保存，下次运行将使用新配置")
+                    st.success("已保存，下次生成用例将使用新配置")
                 except Exception as e:
                     st.error(str(e))
 
     # ---------- 项目记忆 ----------
     with tab_memory:
-        st.subheader(_get_text(T, "memory_tab.section_title") or "项目记忆（可搜索，供 Agent 保持对项目的熟悉）")
+        st.subheader(_get_text(T, "memory_tab.section_title") or "项目记忆")
+        st.caption(_get_text(T, "memory_tab.caption_browse") or "导入的需求文档供 Agent 参考；先搜索查看已有内容，再按需导入。")
 
-        # 搜索（仅搜索后显示结果）
-        st.caption(_get_text(T, "memory_tab.caption_browse") or "干净的需求文档历史。输入关键词搜索后显示匹配文档。")
+        st.markdown("**搜索**")
         kw = st.text_input(
-            _get_text(T, "memory_tab.search_label") or "搜索项目记忆",
-            placeholder=_get_text(T, "memory_tab.search_placeholder") or "输入关键词检索",
+            _get_text(T, "memory_tab.search_label") or "搜索",
+            placeholder=_get_text(T, "memory_tab.search_placeholder") or "输入关键词（如：直播、禁言、AB test）",
             key="mem_search",
+            label_visibility="collapsed",
         )
         entries = search(kw, limit=20) if kw and kw.strip() else []
         if entries:
@@ -381,34 +413,35 @@ def main():
             st.info(_get_text(T, "memory_tab.search_first") or "输入关键词搜索，或通过下方导入后搜索。")
 
         st.divider()
-        st.subheader(_get_text(T, "memory_tab.import_section") or "导入历史需求")
+        st.markdown("**导入需求**")
         quip_for_import = st.text_input(
-            _get_text(T, "memory_tab.quip_token_import_label") or "Quip Token（导入时使用，可与运行流水线共用）",
+            _get_text(T, "memory_tab.quip_token_import_label") or "Quip Token",
             value=defaults["quip_token"], type="password", key="quip_token_import",
+            help="与「生成用例」页共用；已保存则自动带出",
         )
 
-        # 从 Quip 文件夹批量导入
+        st.markdown("方式一：从文件夹批量导入")
         folder_url = st.text_input(
-            _get_text(T, "memory_tab.folder_label") or "Quip 文件夹链接或 folder_id",
-            placeholder=_get_text(T, "memory_tab.folder_placeholder") or "https://quip.com/XXXXX/文件夹名 或 12 字符 folder_id",
+            _get_text(T, "memory_tab.folder_label") or "文件夹链接或 folder_id",
+            placeholder=_get_text(T, "memory_tab.folder_placeholder") or "https://quip.com/xxx/文件夹名 或 12 位 folder_id",
             key="quip_folder",
+            label_visibility="collapsed",
         )
-        st.caption(_get_text(T, "memory_tab.filter_hint") or "拉取时会自动过滤测试用例、UI走查、进度汇总等非需求文档，仅导入 PRD。规则见 config/doc_filter.yaml")
+        st.caption(_get_text(T, "memory_tab.filter_hint") or "仅导入需求类文档，自动过滤测试用例、UI走查、周报等。")
         stable = _load_stable_quip_batch()
-        with st.expander("分批拉取设置（降低 503 风险）", expanded=False):
-            batch_size = st.number_input("每批文档数", min_value=1, max_value=50, value=int(stable["batch_size"]), help="遇 503 会自动降批；上次稳定值已预填")
-            batch_pause = st.number_input("批间暂停秒数", min_value=0, max_value=300, value=int(stable["batch_pause"]), help="每批之间暂停，给 Quip API 恢复时间")
-        if st.button("从 Quip 文件夹批量导入"):
+        with st.expander("高级：分批拉取（遇 503 时调整）", expanded=False):
+            batch_size = st.number_input("每批文档数", min_value=1, max_value=50, value=int(stable["batch_size"]), key="mem_batch_size")
+            batch_pause = st.number_input("批间暂停（秒）", min_value=0, max_value=300, value=int(stable["batch_pause"]), key="mem_batch_pause")
+        if st.button("从文件夹批量导入", key="mem_import_folder"):
             if not folder_url or not folder_url.strip():
-                st.error("请填写 Quip 文件夹链接或 ID")
+                st.error("请填写文件夹链接或 ID")
             else:
                 os.environ["QUIP_ACCESS_TOKEN"] = quip_for_import or os.getenv("QUIP_ACCESS_TOKEN", "")
                 if not os.environ.get("QUIP_ACCESS_TOKEN"):
-                    st.warning("请先在「运行流水线」页保存 Quip Token，或在环境变量中设置 QUIP_ACCESS_TOKEN")
+                    st.warning("请先填写上方 Quip Token 或在「生成用例」页保存")
                 else:
                     progress_bar = st.progress(0)
                     status_text = st.empty()
-                    progress_info = {}
                     def on_progress(cur, tot, msg):
                         if tot > 0:
                             progress_bar.progress(min(1.0, cur / tot))
@@ -419,7 +452,7 @@ def main():
                             progress_callback=on_progress,
                             batch_size=int(batch_size),
                             batch_pause=float(batch_pause),
-                            progress_info=progress_info,
+                            progress_info={},
                         )
                         for d in docs:
                             add_entry("quip_folder", d["content"], source_id=d["thread_id"], title=d["title"], summary=d["content"][:500])
@@ -427,60 +460,61 @@ def main():
                         status_text.caption("")
                         _save_stable_quip_batch(stats["stable_batch_size"], stats["stable_batch_pause"])
                         filtered = stats.get("filtered_count", 0)
-                        msg = f"已导入 {len(docs)} 条需求文档"
+                        msg = f"已导入 {len(docs)} 条"
                         if filtered > 0:
-                            msg += f"，自动过滤 {filtered} 条非需求文档（测试用例/UI走查/进度汇总等）"
-                        msg += "，可在上方搜索查看。"
-                        if stats.get("batch_reduced"):
-                            msg += f" 本次遇 503 已自动降批，稳定批次：每批 {stats['stable_batch_size']} 个，已保存供下次使用。"
-                        else:
-                            msg += f" 当前稳定批次：每批 {stats['stable_batch_size']} 个。"
+                            msg += f"，过滤 {filtered} 条非需求"
+                        msg += "。可在上方搜索查看。"
                         st.success(msg)
                     except Exception as ex:
                         st.error(f"导入失败: {ex}")
 
-        # 从 Quip 单文档导入（补充：若用户只想导入单文档）
+        st.markdown("方式二：从单文档导入")
         single_url = st.text_input(
-            _get_text(T, "memory_tab.single_label") or "或导入单个 Quip 文档",
-            placeholder=_get_text(T, "memory_tab.single_placeholder") or "https://quip.com/xxx（可选）",
+            _get_text(T, "memory_tab.single_label") or "文档链接",
+            placeholder=_get_text(T, "memory_tab.single_placeholder") or "https://quip.com/xxx",
             key="quip_single",
+            label_visibility="collapsed",
         )
-        if st.button("从单文档导入"):
+        if st.button("导入该文档", key="mem_import_single"):
             if single_url and single_url.strip():
                 try:
                     content, doc_title = load_demand_from_quip(single_url.strip(), return_title=True)
                     keep, reason = is_product_requirement_doc("", content)
                     if not keep:
-                        st.warning(f"该文档被识别为非需求文档（{reason}），已跳过导入。若确为需求文档，可在 config/doc_filter.yaml 中调整过滤规则。")
+                        st.warning(f"被识别为非需求文档（{reason}），已跳过。")
                     else:
                         add_entry("quip_single", content, source_id=single_url.strip(), title=doc_title, summary=content[:500])
-                        st.success("已导入，可在上方搜索查看。")
+                        st.success("已导入，可在上方搜索查看")
                 except Exception as ex:
                     st.error(str(ex))
+            else:
+                st.error("请填写文档链接")
 
         st.divider()
-        st.subheader(_get_text(T, "memory_tab.memory_summary_section") or "项目记忆摘要（手动编辑，注入 Agent 上下文）")
-        mem = load_project_memory()
-        new_mem = st.text_area(
-            _get_text(T, "memory_tab.memory_text_label") or "项目记忆内容",
-            value=mem, height=200, key="project_memory_text",
-        )
-        if st.button("保存项目记忆摘要"):
-            os.makedirs(CONFIG_DIR, exist_ok=True)
-            with open(PROJECT_MEMORY_PATH, "w", encoding="utf-8") as f:
-                f.write(new_mem)
-            st.success("已保存")
-
-        if st.button("从本次运行更新（追加摘要到记忆库 + 摘要文件）"):
-            if st.session_state.get("last_run") and st.session_state.get("last_demand_snippet"):
-                snippet = st.session_state["last_demand_snippet"]
-                result = st.session_state["last_run"].get("result_str", "")[:2000]
-                addition = f"【最近一次需求摘要】\n{snippet}\n\n【产出摘要】\n{result}"
-                update_project_memory(addition)
-                add_entry("run_summary", result, title="最近一次运行", summary=snippet)
-                st.success("已追加到项目记忆；Agent 下次运行将带上这些上下文。")
-            else:
-                st.info("请先运行一次流水线后再点击「从本次运行更新」。")
+        with st.expander(_get_text(T, "memory_tab.memory_summary_section") or "项目记忆摘要（高级）", expanded=False):
+            mem = load_project_memory()
+            new_mem = st.text_area(
+                _get_text(T, "memory_tab.memory_text_label") or "内容",
+                value=mem, height=180, key="project_memory_text",
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("保存摘要", key="mem_save_summary"):
+                    os.makedirs(CONFIG_DIR, exist_ok=True)
+                    with open(PROJECT_MEMORY_PATH, "w", encoding="utf-8") as f:
+                        f.write(new_mem)
+                    st.success("已保存")
+            with c2:
+                if st.button("从本次运行追加", key="mem_update_from_run"):
+                    if st.session_state.get("last_run") and st.session_state.get("last_demand_snippet"):
+                        snippet = st.session_state["last_demand_snippet"]
+                        result = st.session_state["last_run"].get("result_str", "")[:2000]
+                        addition = f"【最近一次需求摘要】\n{snippet}\n\n【产出摘要】\n{result}"
+                        update_project_memory(addition)
+                        add_entry("run_summary", result, title="最近一次运行", summary=snippet)
+                        st.success("已追加到项目记忆")
+                    else:
+                        st.info("请先在「生成用例」页运行一次")
 
     # ---------- 与文档 Agent 沟通 ----------
     with tab_chat:
@@ -524,6 +558,10 @@ def main():
 
         if "doc_chat_messages" not in st.session_state:
             st.session_state["doc_chat_messages"] = []
+
+        if st.session_state["doc_chat_messages"] and st.button(_get_text(T, "chat_tab.clear_btn") or "清空对话", key="chat_clear"):
+            st.session_state["doc_chat_messages"] = []
+            st.rerun()
 
         for msg in st.session_state["doc_chat_messages"]:
             with st.chat_message(msg["role"]):
