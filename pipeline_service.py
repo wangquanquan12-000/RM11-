@@ -14,9 +14,7 @@ from crew_test import (
     load_demand_from_quip,
     run_pipeline,
     _parse_markdown_tables,
-    _parse_json_tables,
     tables_to_text,
-    tables_to_markdown,
     export_tables_to_excel_bytes,
 )
 
@@ -33,6 +31,38 @@ def _debug_save_parse_fail(raw_content: str) -> None:
             f.write(f"\n\n=== 解析失败 {ts} ===\n\n")
             f.write((raw_content or "")[:8000])
             f.write("\n")
+    except Exception:
+        pass
+
+
+def _log_parse_fail(
+    step_outputs: list[dict],
+    cases_md_len: int,
+    result_str_len: int,
+    raw_preview: str,
+) -> None:
+    """解析失败时写入结构化日志到 output/parse_fail_log.txt，便于排查。"""
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+        out_dir = os.path.join(base, "output")
+        os.makedirs(out_dir, exist_ok=True)
+        log_path = os.path.join(out_dir, "parse_fail_log.txt")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        task_ids = [s.get("task", "") for s in step_outputs]
+        task3_len = 0
+        for s in step_outputs:
+            if s.get("task") == "task3":
+                task3_len = len(str(s.get("content", "")))
+                break
+        lines = [
+            f"[{ts}] 表格解析失败",
+            f"  step_outputs: {task_ids}",
+            f"  cases_md_len={cases_md_len} task3_content_len={task3_len} result_str_len={result_str_len}",
+            f"  raw_preview: {repr(raw_preview[:300])}",
+            "",
+        ]
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines))
     except Exception:
         pass
 from memory_store import (
@@ -285,25 +315,17 @@ def run_upload_to_cases(
         elif tid == "task3":
             cases_md = content
 
-    # 优先从 task3 解析：先尝试 JSON，再尝试 Markdown；若无则从 result_str（task4 输出）尝试
+    # 优先从 task3（用例表）解析；若无则从 result_str（task4 输出）尝试
     result_str = (out.get("result_str") or "").strip()
-    tables = []
-    for raw in (cases_md, result_str):
-        if not (raw or "").strip():
-            continue
-        tables = _parse_json_tables(raw)
-        if not tables:
-            tables = _parse_markdown_tables(raw)
-        if tables:
-            break
+    tables = _parse_markdown_tables(cases_md) if (cases_md or "").strip() else []
+    if not tables and result_str:
+        tables = _parse_markdown_tables(result_str)
 
-    # 解析成功时，统一转为 Markdown 供 UI 展示（JSON 解析时 cases_md 为原始 JSON，需转换）
-    if tables:
-        cases_md = tables_to_markdown(tables)
-
-    # 排查1：解析失败时保存原始内容，便于排查
+    # 解析失败时：保存原始内容 + 写入日志
     if not tables and (cases_md or result_str):
-        _debug_save_parse_fail(cases_md or result_str)
+        raw = cases_md or result_str
+        _debug_save_parse_fail(raw)
+        _log_parse_fail(step_outputs=out.get("step_outputs") or [], cases_md_len=len(cases_md or ""), result_str_len=len(result_str or ""), raw_preview=(raw or "")[:500])
 
     excel_bytes = export_tables_to_excel_bytes(tables) if tables else None
 

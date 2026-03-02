@@ -1071,21 +1071,6 @@ def tables_to_text(tables: list[list[list[str]]]) -> str:
     return "\n".join(lines).strip()
 
 
-def tables_to_markdown(tables: list[list[list[str]]]) -> str:
-    """将解析出的表格转为 Markdown 表格格式，供 UI 展示。"""
-    lines: list[str] = []
-    for tbl in tables:
-        if not tbl:
-            continue
-        for i, row in enumerate(tbl):
-            cells = [str(c or "").strip() for c in row]
-            lines.append("| " + " | ".join(cells) + " |")
-            if i == 0:
-                lines.append("| " + " | ".join("---" for _ in cells) + " |")
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
 def _normalize_table_line(line: str) -> str | None:
     """将疑似表格行规范为 |...| 格式，便于 _parse_markdown_tables 解析。
     若行内含 2 个以上 | 且像表格行，则补全首尾 |；否则返回 None。"""
@@ -1097,43 +1082,6 @@ def _normalize_table_line(line: str) -> str | None:
     if not s.endswith("|"):
         s = s + " |"
     return s
-
-
-# 9 列固定表头（JSON 与 Markdown 通用）
-_CASE_TABLE_HEADERS = ["序号", "用例编号", "主模块", "子场景", "用例概述", "优先级", "前置条件", "测试步骤", "预期结果"]
-
-
-def _parse_json_tables(text: str) -> list[list[list[str]]]:
-    """从 JSON 数组解析测试用例表格。每元素为对象，键为 9 列字段名。
-    返回 [表格1行列表]，表格为 [row1, row2, ...]，每行为 [cell, ...]。"""
-    import json
-    text = (text or "").strip()
-    if not text:
-        return []
-    # 尝试提取 ```json ... ``` 块
-    m = re.search(r"```(?:json)?\s*\n?([\s\S]*?)```", text, re.IGNORECASE)
-    if m:
-        text = (m.group(1) or "").strip()
-    if not text:
-        return []
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(data, list) or not data:
-        return []
-    rows: list[list[str]] = []
-    headers = _CASE_TABLE_HEADERS
-    rows.append(headers)
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        row = [str(item.get(k, "") or "").strip() for k in headers]
-        if any(row):
-            rows.append(row)
-    if len(rows) <= 1:
-        return []
-    return [rows]
 
 
 def _extract_table_candidates(text: str) -> list[str]:
