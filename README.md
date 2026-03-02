@@ -58,5 +58,3 @@ python3 -m streamlit run app_ui.py --server.port 8501
 - **运行流水线**：填写 Quip 文档链接与 Token、Gemini Key，点击运行即可看到 Agent 沟通过程与结果，并下载 Excel 或打开 Quip/Sheets 链接。
 - **编辑 Agent**：在「编辑 Agent」页修改 `config/agents.yaml` 中的角色与任务，保存后下次运行生效。
 - **项目记忆**：在「项目记忆」页维护项目摘要，或从本次运行追加，供 Agent 保持对项目的熟悉。
-
-详细步骤见 `如何打开应用.md`。
