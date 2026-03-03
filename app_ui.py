@@ -106,6 +106,20 @@ MODULE_CHAT = "chat"
 MODULE_RISK_REPORT = "risk_report"
 MODULE_SETTINGS = "settings"
 
+class _MemoryUpload:
+    """内存中的上传文件封装，兼容 parse_uploaded_files / parse_test_cases_file 接口。"""
+
+    def __init__(self, name: str, data: bytes) -> None:
+        self.name = name
+        self._data = data or b""
+
+    def read(self) -> bytes:
+        return self._data
+
+    def getvalue(self) -> bytes:
+        return self._data
+
+
 SUMMARY_PROMPT = (
     "你是一位资深需求与测试架构师。这是一份新上传或导入的测试或需求文档。"
     "请用 150 字以内的中文，总结该文档主要涵盖的业务模块、核心操作流程以及增删改的重点逻辑。"
@@ -742,6 +756,16 @@ def _render_paste_mode(T: dict, defaults: dict):
         help="可选；上传后作为 Agent 上下文",
     )
 
+    # 缓存粘贴模式下上传的 xlsx，切换 Tab / 模式后仍保留
+    xlsx_cache_key = "run_paste_xlsx_cache"
+    if xlsx_uploaded:
+        try:
+            name = getattr(xlsx_uploaded, "name", "") or "既有用例.xlsx"
+            data = xlsx_uploaded.read()
+            st.session_state[xlsx_cache_key] = {"name": name, "bytes": data}
+        except Exception:
+            pass
+
     _paste_key = _get_module_state_key(MODULE_RUN, "paste_running")
     _paste_result_key = _get_module_state_key(MODULE_RUN, "paste_last_run")
     _paste_error_key = _get_module_state_key(MODULE_RUN, "paste_last_error")
@@ -750,14 +774,23 @@ def _render_paste_mode(T: dict, defaults: dict):
     if st.button("清空文本与附件", key="run_paste_reset"):
         st.session_state["run_paste_content"] = ""
         st.session_state["run_paste_xlsx"] = None
+        st.session_state.pop(xlsx_cache_key, None)
         st.session_state[_paste_result_key] = None
         st.session_state[_paste_error_key] = None
         st.rerun()
 
     existing_cases = ""
-    if xlsx_uploaded:
+    cached_xlsx = st.session_state.get(xlsx_cache_key)
+    if xlsx_uploaded or cached_xlsx:
         try:
-            _, existing_cases, _ = parse_uploaded_files([xlsx_uploaded])
+            files_for_parse = []
+            if xlsx_uploaded:
+                files_for_parse = [xlsx_uploaded]
+            elif cached_xlsx:
+                files_for_parse = [
+                    _MemoryUpload(cached_xlsx["name"], cached_xlsx["bytes"])
+                ]
+            _, existing_cases, _ = parse_uploaded_files(files_for_parse)
         except Exception:
             pass
 
@@ -885,6 +918,25 @@ def _render_upload_mode(T: dict, defaults: dict):
         help="支持 .md、.docx（Word）、.xlsx，可混合选择；单文件 &lt; 10MB，总 &lt; 50MB",
     )
 
+    # 将上传文件缓存到 session_state，切换 Tab 或 demand_source 后仍可使用
+    cache_key = "run_upload_files_cache"
+    if uploaded:
+        files = uploaded if isinstance(uploaded, list) else [uploaded]
+        cached = []
+        for f in files:
+            try:
+                name = getattr(f, "name", "") or "未命名"
+                data = f.read()
+            except Exception:
+                continue
+            cached.append({"name": name, "bytes": data})
+        if cached:
+            st.session_state[cache_key] = cached
+    cached_files = st.session_state.get(cache_key) or []
+    effective_files = [
+        _MemoryUpload(item["name"], item["bytes"]) for item in cached_files
+    ]
+
     # 用户主动清空时才重置缓存，满足 F6-2 约束
     _upload_key = _get_module_state_key(MODULE_RUN, "upload_running")
     _upload_result_key = _get_module_state_key(MODULE_RUN, "upload_last_run")
@@ -893,27 +945,32 @@ def _render_upload_mode(T: dict, defaults: dict):
         st.session_state["run_upload_files"] = None
         st.session_state[_upload_result_key] = None
         st.session_state[_upload_error_key] = None
+        st.session_state.pop("run_upload_files_cache", None)
         st.rerun()
 
     demand_md = ""
     existing_cases = ""
     preview_infos = []
 
-    if uploaded:
-        try:
-            demand_md, existing_cases, preview_infos = parse_uploaded_files(uploaded)
-        except Exception as e:
-            st.error(f"解析失败：{e}")
-        else:
-            for p in preview_infos:
-                name = p.get("name", "")
-                if p.get("type") in ("md", "docx"):
-                    prev = p.get("preview", "")[:200]
-                    st.caption(f"📄 {name} — {prev}…" if len(str(p.get("preview", ""))) > 200 else f"📄 {name} — {prev}")
-                else:
-                    st.caption(f"📊 {name} — {p.get('rows', 0)} 行")
+    try:
+        if effective_files:
+            demand_md, existing_cases, preview_infos = parse_uploaded_files(effective_files)
+    except Exception as e:
+        st.error(f"解析失败：{e}")
+    else:
+        for p in preview_infos:
+            name = p.get("name", "")
+            if p.get("type") in ("md", "docx"):
+                prev = p.get("preview", "")[:200]
+                st.caption(
+                    f"📄 {name} — {prev}…"
+                    if len(str(p.get("preview", ""))) > 200
+                    else f"📄 {name} — {prev}"
+                )
+            else:
+                st.caption(f"📊 {name} — {p.get('rows', 0)} 行")
 
-    if not demand_md and uploaded:
+    if not demand_md and effective_files:
         st.warning("至少需上传 1 个需求文档（.md 或 .docx）；或文件类型/大小不符要求。")
 
     gemini_models_list, default_model = _load_models()
@@ -1429,6 +1486,7 @@ def _render_module_memory(T: dict, defaults: dict):
 
     try:
         from app_ui_components import render_file_uploader
+
         test_cases_upload_result = render_file_uploader(
             accepted_types=["xlsx", "xls", "csv", "txt"],
             key="test_cases_upload",
@@ -1443,6 +1501,16 @@ def _render_module_memory(T: dict, defaults: dict):
             label_visibility="collapsed",
         )
 
+    # 缓存测试用例上传文件，切换 Tab 后仍可使用
+    tc_cache_key = "memory_test_cases_upload_cache"
+    if test_cases_file:
+        try:
+            name = getattr(test_cases_file, "name", "") or "测试用例上传"
+            data = test_cases_file.read()
+            st.session_state[tc_cache_key] = {"name": name, "bytes": data}
+        except Exception:
+            pass
+
     test_cases_paste = st.text_area(
         _get_text(T, "memory_tab.test_cases_paste_placeholder") or "或粘贴内容",
         placeholder=_get_text(T, "memory_tab.test_cases_paste_placeholder") or "表格（| 分隔）或纯文本",
@@ -1451,10 +1519,15 @@ def _render_module_memory(T: dict, defaults: dict):
         label_visibility="collapsed",
     )
     if st.button(_get_text(T, "memory_tab.test_cases_import_btn") or "导入测试用例", key="mem_import_test_cases"):
-        if test_cases_file:
+        cached_tc = st.session_state.get(tc_cache_key)
+        file_for_import = test_cases_file
+        if not file_for_import and cached_tc:
+            file_for_import = _MemoryUpload(cached_tc["name"], cached_tc["bytes"])
+
+        if file_for_import:
             with st.spinner(_get_text(T, "memory_tab.import_spinner_file") or "解析文件中…"):
                 try:
-                    content, rows = parse_test_cases_file(test_cases_file)
+                    content, rows = parse_test_cases_file(file_for_import)
                     if not content.strip():
                         st.warning(_get_text(T, "memory_tab.file_empty") or "文件内容为空")
                     else:
@@ -1532,6 +1605,20 @@ def _render_module_memory(T: dict, defaults: dict):
             label_visibility="collapsed",
         )
 
+    # 缓存设计图上传文件，切换 Tab 后仍可使用
+    design_cache_key = "memory_design_mockup_upload_cache"
+    if design_files:
+        cached_list: list[dict[str, bytes]] = []
+        for f in (design_files or []):
+            try:
+                name = getattr(f, "name", "") or "设计图"
+                data = f.read()
+            except Exception:
+                continue
+            cached_list.append({"name": name, "bytes": data})
+        if cached_list:
+            st.session_state[design_cache_key] = cached_list
+
     if st.button(
         _get_text(T, "memory_tab.design_mockup_import_btn") or "解析并导入",
         key="mem_import_design",
@@ -1539,11 +1626,17 @@ def _render_module_memory(T: dict, defaults: dict):
         gemini_key = defaults.get("gemini_key", "")
         if not gemini_key:
             st.error(_get_text(T, "memory_tab.design_mockup_key_missing") or "请先在设置中配置 Gemini API Key")
-        elif not design_files:
-            st.error(_get_text(T, "memory_tab.import_required") or "请上传设计图文件")
         else:
-            files_to_process = list(design_files)[:5]
-            if len(files_to_process) < len(list(design_files)):
+            cached_design = st.session_state.get(design_cache_key) or []
+            files_source = list(design_files) if design_files else [
+                _MemoryUpload(item["name"], item["bytes"]) for item in cached_design
+            ]
+            if not files_source:
+                st.error(_get_text(T, "memory_tab.import_required") or "请上传设计图文件")
+                return
+
+            files_to_process = files_source[:5]
+            if len(files_to_process) < len(files_source):
                 st.warning("已超过 5 个文件限制，只处理前 5 个。")
 
             import_count = 0
