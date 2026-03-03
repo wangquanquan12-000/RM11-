@@ -1,6 +1,6 @@
 # 需求 → 测试用例流水线
 
-从 Quip 需求文档出发，经四个 Agent（文档分析 → 测试点拆解 → 测试用例生成 → 评审）产出符合规范的测试用例，支持 Excel / Quip / Google 表格导出。
+从需求文档出发，经四个 Agent（文档分析 → 测试点拆解 → 测试用例生成 → 评审）产出符合规范的测试用例，支持 Excel 导出。
 
 ## 本地运行
 
@@ -32,7 +32,6 @@ python3 -m streamlit run app_ui.py --server.port 8501
 3. **配置密钥（云端必填）**
    - 在应用的 **Settings → Secrets** 中填写：
    ```toml
-   QUIP_ACCESS_TOKEN = "你的 Quip Token"
    GEMINI_API_KEY = "你的 Gemini API Key"
    ```
    - 应用会从环境变量读取，无需在界面反复粘贴。
@@ -42,19 +41,19 @@ python3 -m streamlit run app_ui.py --server.port 8501
 | 文件/目录       | 说明 |
 |----------------|------|
 | `app_ui.py`    | Streamlit 网页入口（运行流水线 / 编辑 Agent / 项目记忆） |
-| `crew_test.py` | 四 Agent 流水线核心逻辑（Quip 拉取、Crew 执行、Excel/Quip/Sheets 导出） |
+| `crew_test.py` | 四 Agent 流水线核心逻辑（解析需求、Crew 执行、Excel 导出） |
 | `config/agents.yaml` | Agent 与 Task 定义，可在界面中编辑 |
 | `requirements.txt` | Python 依赖 |
 | `run_app.sh` / `run_app.bat` | 本地启动脚本 |
 
 ## 凭证安全
 
-- **本地**：点击「保存到本地」时，Token 与 Key 会写入 `config/defaults.json`（已 gitignore），并设置为仅当前用户可读写。
-- **共享电脑**：建议使用环境变量 `QUIP_ACCESS_TOKEN`、`GEMINI_API_KEY`，不要保存到本地。
+- **本地**：点击「保存到本地」时，Key 会写入 `config/defaults.json`（已 gitignore），并设置为仅当前用户可读写。
+- **共享电脑**：建议使用环境变量 `GEMINI_API_KEY`，不要保存到本地。
 - **云端部署**：在 Streamlit Cloud 的 Settings → Secrets 中配置，切勿将凭证提交到仓库。
 
 ## 使用说明
 
-- **运行流水线**：填写 Quip 文档链接与 Token、Gemini Key，点击运行即可看到 Agent 沟通过程与结果，并下载 Excel 或打开 Quip/Sheets 链接。
+- **运行流水线**：上传或粘贴需求文档，配置 Gemini Key，点击运行即可看到 Agent 沟通过程与结果，并下载 Excel。
 - **编辑 Agent**：在「编辑 Agent」页修改 `config/agents.yaml` 中的角色与任务，保存后下次运行生效。
 - **项目记忆**：在「项目记忆」页维护项目摘要，或从本次运行追加，供 Agent 保持对项目的熟悉。

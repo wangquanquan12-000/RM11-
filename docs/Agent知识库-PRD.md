@@ -47,7 +47,7 @@
 
 ### 3.1 原始数据层（沿用）
 
-- SQLite：`config/memory.db` → `memory_entries`（`quip_folder` / `quip_single` / `test_cases` / `run_summary` 等）。
+- SQLite：`config/memory.db` → `memory_entries`（`manual` / `test_cases` / `run_summary` 等）。
 - Markdown：`config/project_memory.md`（手工项目背景）。
 
 ### 3.2 知识库层（新增）

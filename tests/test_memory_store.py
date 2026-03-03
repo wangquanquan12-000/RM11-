@@ -61,15 +61,15 @@ def test_delete_entry():
 
 
 def test_get_recent_for_agent():
-    ms.add_entry("quip_folder", "需求内容", source_id="abc123", title="需求A")
+    ms.add_entry("manual", "需求内容", source_id="abc123", title="需求A")
     s = ms.get_recent_for_agent(limit=2, demand_only=True)
     assert isinstance(s, str)
     assert "需求A" in s or len(s) == 0
 
 
 def test_add_entry_upsert():
-    rid1 = ms.add_entry("quip_single", "v1", source_id="tid1", title="T1")
-    rid2 = ms.add_entry("quip_single", "v2", source_id="tid1", title="T1-upd")
+    rid1 = ms.add_entry("manual", "v1", source_id="tid1", title="T1")
+    rid2 = ms.add_entry("manual", "v2", source_id="tid1", title="T1-upd")
     assert rid1 == rid2
     entries = ms.list_recent(limit=5)
     match = [e for e in entries if e.get("source_id") == "tid1"]
@@ -77,7 +77,7 @@ def test_add_entry_upsert():
 
 
 def test_get_all_demands_full_for_chat():
-    ms.add_entry("quip_folder", "完整需求内容ABC", source_id="q1", title="需求Q1")
+    ms.add_entry("manual", "完整需求内容ABC", source_id="q1", title="需求Q1")
     s = ms.get_all_demands_full_for_chat(limit=5)
     assert isinstance(s, str)
     assert "完整需求内容ABC" in s
@@ -85,11 +85,11 @@ def test_get_all_demands_full_for_chat():
 
 
 def test_list_for_browse():
-    ms.add_entry("quip_folder", "x", title="X")
+    ms.add_entry("manual", "x", title="X")
     entries = ms.list_for_browse(limit=5)
     assert isinstance(entries, list)
-    entries2 = ms.list_for_browse(source_type_filter="quip_folder", limit=5)
-    assert all(e.get("source_type") == "quip_folder" for e in entries2)
+    entries2 = ms.list_for_browse(source_type_filter="manual", limit=5)
+    assert all(e.get("source_type") == "manual" for e in entries2)
 
 
 def test_test_cases_in_agent_context():
@@ -104,3 +104,17 @@ def test_get_entry_content():
     c = ms.get_entry_content(ms.TEST_CASES_SOURCE_TYPE, "full_regression")
     assert c == "content_xyz"
     assert ms.get_entry_content("nonexistent", "x") is None
+
+
+def test_add_entry_with_dedup_added_updated_skipped():
+    rid1, st1 = ms.add_entry_with_dedup("manual", "abc-content", source_id="dedup-1", title="D1")
+    assert rid1 > 0
+    assert st1 == "added"
+
+    rid2, st2 = ms.add_entry_with_dedup("manual", "new-content", source_id="dedup-1", title="D1-upd")
+    assert rid2 == rid1
+    assert st2 == "updated"
+
+    rid3, st3 = ms.add_entry_with_dedup("manual", "new-content", source_id="dedup-2", title="D2")
+    assert rid3 == rid1
+    assert st3 == "skipped"

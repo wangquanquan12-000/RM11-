@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 项目记忆存储：干净的需求文档历史，供 Agent 与用户查阅
-- 需求文档: quip_folder, quip_single（Agent 主要使用）
+- 需求文档: manual（粘贴导入）
 - 运行产出: run_summary（可选供 Agent）
 """
 import sqlite3
 import os
+import hashlib
 from datetime import datetime
 from typing import Any
 
@@ -13,7 +14,7 @@ CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 MEMORY_DB_PATH = os.path.join(CONFIG_DIR, "memory.db")
 
 # 视为「需求文档」的 source_type，供 Agent 使用
-DEMAND_SOURCE_TYPES = ("quip_folder", "quip_single")
+DEMAND_SOURCE_TYPES = ("manual",)
 # 测试用例：导入后供 Agent 理解项目既有用例
 TEST_CASES_SOURCE_TYPE = "test_cases"
 
@@ -43,13 +44,30 @@ def _ensure_tables(conn):
             conn.commit()
         except sqlite3.OperationalError:
             pass  # 列已存在
+    try:
+        conn.execute("ALTER TABLE memory_entries ADD COLUMN content_hash TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_index (
+            content_hash TEXT PRIMARY KEY,
+            entry_id INTEGER NOT NULL,
+            file_name TEXT,
+            created_at TEXT
+        )
+        """
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_created ON memory_entries(created_at DESC)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_source ON memory_entries(source_type)"
     )
-    conn.commit()
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_content_hash ON memory_entries(content_hash)"
+    )
 
 
 def add_entry(
@@ -60,11 +78,12 @@ def add_entry(
     summary: str = "",
 ) -> int:
     """添加或更新记忆。相同 source_type+source_id 时更新，避免重复。
-    source_type: manual | quip_single | quip_folder | run_summary"""
+    source_type: manual | run_summary"""
     conn = _get_conn()
     _ensure_tables(conn)
     now = datetime.now().isoformat()
     sid = (source_id or "").strip()
+    content_hash = _compute_content_hash(content)
     # 有 source_id 时尝试 upsert（唯一索引可能不存在于旧库，先尝试）
     if sid:
         existing = conn.execute(
@@ -74,22 +93,113 @@ def add_entry(
         if existing:
             conn.execute(
                 """UPDATE memory_entries SET created_at=?, title=?, content=?, summary=?,
-                   agent_summary='', agent_summary_status='pending'
+                   content_hash=?, agent_summary='', agent_summary_status='pending'
                    WHERE source_type=? AND source_id=?""",
-                (now, title or "", content, summary or "", source_type, sid),
+                (now, title or "", content, summary or "", content_hash, source_type, sid),
+            )
+            conn.execute(
+                """INSERT INTO memory_index (content_hash, entry_id, file_name, created_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(content_hash) DO UPDATE SET
+                     entry_id=excluded.entry_id, file_name=excluded.file_name, created_at=excluded.created_at""",
+                (content_hash, int(existing["id"]), title or "", now),
             )
             conn.commit()
             rowid = existing["id"]
             conn.close()
             return rowid
     cur = conn.execute(
-        "INSERT INTO memory_entries (created_at, source_type, source_id, title, content, summary) VALUES (?,?,?,?,?,?)",
-        (now, source_type, sid, title or "", content, summary or ""),
+        "INSERT INTO memory_entries (created_at, source_type, source_id, title, content, summary, content_hash) VALUES (?,?,?,?,?,?,?)",
+        (now, source_type, sid, title or "", content, summary or "", content_hash),
     )
     conn.commit()
     rowid = cur.lastrowid
+    if rowid:
+        conn.execute(
+            """INSERT OR REPLACE INTO memory_index (content_hash, entry_id, file_name, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (content_hash, int(rowid), title or "", now),
+        )
+        conn.commit()
     conn.close()
     return rowid or 0
+
+
+def _compute_content_hash(content: str) -> str:
+    """计算内容 SHA-256 哈希，用于去重。"""
+    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
+
+def add_entry_with_dedup(
+    source_type: str,
+    content: str,
+    source_id: str = "",
+    title: str = "",
+    summary: str = "",
+) -> tuple[int, str]:
+    """带哈希去重的添加/更新。
+    返回 (rowid, status): added | updated | skipped
+    """
+    clean_content = (content or "").strip()
+    if not clean_content:
+        return 0, "skipped"
+
+    conn = _get_conn()
+    _ensure_tables(conn)
+    now = datetime.now().isoformat()
+    sid = (source_id or "").strip()
+    content_hash = _compute_content_hash(clean_content)
+
+    # 先按哈希去重：命中则直接跳过
+    existing_by_hash = conn.execute(
+        "SELECT id FROM memory_entries WHERE content_hash = ? LIMIT 1",
+        (content_hash,),
+    ).fetchone()
+    if existing_by_hash:
+        conn.close()
+        return int(existing_by_hash["id"]), "skipped"
+
+    # 再按 source_type + source_id 更新
+    if sid:
+        existing = conn.execute(
+            "SELECT id FROM memory_entries WHERE source_type = ? AND source_id = ?",
+            (source_type, sid),
+        ).fetchone()
+        if existing:
+            rowid = int(existing["id"])
+            conn.execute(
+                """UPDATE memory_entries
+                   SET created_at=?, title=?, content=?, summary=?, content_hash=?,
+                       agent_summary='', agent_summary_status='pending'
+                   WHERE id=?""",
+                (now, title or "", clean_content, summary or "", content_hash, rowid),
+            )
+            conn.execute(
+                """INSERT INTO memory_index (content_hash, entry_id, file_name, created_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(content_hash) DO UPDATE SET
+                     entry_id=excluded.entry_id, file_name=excluded.file_name, created_at=excluded.created_at""",
+                (content_hash, rowid, title or "", now),
+            )
+            conn.commit()
+            conn.close()
+            return rowid, "updated"
+
+    cur = conn.execute(
+        """INSERT INTO memory_entries
+           (created_at, source_type, source_id, title, content, summary, content_hash)
+           VALUES (?,?,?,?,?,?,?)""",
+        (now, source_type, sid, title or "", clean_content, summary or "", content_hash),
+    )
+    rowid = int(cur.lastrowid or 0)
+    conn.execute(
+        """INSERT OR REPLACE INTO memory_index (content_hash, entry_id, file_name, created_at)
+           VALUES (?, ?, ?, ?)""",
+        (content_hash, rowid, title or "", now),
+    )
+    conn.commit()
+    conn.close()
+    return rowid, "added"
 
 
 def search(keyword: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -161,6 +271,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d.setdefault("agent_summary", "")
     d.setdefault("agent_summary_status", "pending")
+    d.setdefault("content_hash", "")
     return d
 
 
@@ -208,7 +319,7 @@ def get_recent_for_agent(
     include_test_cases: bool = False,
 ) -> str:
     """获取供 Agent 使用的需求文档上下文。
-    demand_only=True 时只取需求文档（quip_folder, quip_single）。
+    demand_only=True 时只取需求文档（manual）。
     include_test_cases=True 时额外包含 test_cases 类型的全回归用例。"""
     conn = _get_conn()
     _ensure_tables(conn)

@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 需求文档 → 分析问题 → 整理测试点 → 生成测试用例 → 评审优化
-支持从文本文件或 Quip 文档读入需求，跑完整个 Crew 流程并保存结果。
-测试用例支持导出：Excel（直接下载）、Quip 新文档表格、Google 表格。
+支持从文本文件读入需求，跑完整个 Crew 流程并保存结果。
+测试用例支持导出：Excel（直接下载）、Google 表格。
 
 用法:
   export GEMINI_API_KEY=你的key
   python crew_test.py -f demand.txt              # 指定需求文件
-  python crew_test.py --quip <thread_id>         # 从 Quip 文档读取（需 QUIP_ACCESS_TOKEN）
-  python crew_test.py -f demand.txt --excel      # 同时导出 Excel（默认开启，--no-excel 关闭）
-  python crew_test.py -f demand.txt --export-quip # 在 Quip 中新建文档并写入表格（需 QUIP_ACCESS_TOKEN）
+  python crew_test.py -f demand.txt --no-excel   # 不导出 Excel（默认开启）
   python crew_test.py -f demand.txt --export-sheets # 导出到 Google 表格（需配置 GOOGLE_SHEETS_CREDENTIALS_JSON）
-  python crew_test.py -f demand.txt --local        # 本地模式：不调用 Gemini，用占位 LLM 跑完四 Agent 并导出 Excel
+  python crew_test.py -f demand.txt --local      # 本地模式：不调用 Gemini，用占位 LLM 跑完四 Agent 并导出 Excel
 """
 import argparse
 import html as html_lib
@@ -19,12 +17,8 @@ import json
 import os
 import re
 import sys
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from crewai import Agent, Task, Crew
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -58,6 +52,26 @@ def _resolve_gemini_model(model: str) -> str:
     """将已弃用模型名映射到当前可用模型。"""
     m = (model or "").strip().lower()
     return _DEPRECATED_GEMINI_MODEL_MAP.get(m, m or "gemini-2.5-flash-lite")
+
+
+def _build_gemini_llm(
+    model_name: str,
+    gemini_api_key: str,
+    cached_content_name: str = "",
+) -> ChatGoogleGenerativeAI:
+    """构建 Gemini LLM；若 SDK 支持则挂载 cached_content。"""
+    base_kwargs = {
+        "model": model_name,
+        "google_api_key": gemini_api_key,
+        "temperature": 0.4,
+    }
+    if cached_content_name:
+        try:
+            return ChatGoogleGenerativeAI(cached_content=cached_content_name, **base_kwargs)
+        except TypeError:
+            # 兼容不支持 cached_content 参数的版本
+            pass
+    return ChatGoogleGenerativeAI(**base_kwargs)
 
 
 def _load_doc_filter_config() -> dict[str, Any]:
@@ -190,11 +204,18 @@ def _run_crew_sequential(
     if not gemini_api_key:
         raise ValueError("ERROR: GEMINI_API_KEY 未设置。")
     model_name = _resolve_gemini_model(os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"))
-    llm = ChatGoogleGenerativeAI(
-        model=model_name,
-        google_api_key=gemini_api_key,
-        temperature=0.4,
-    )
+    cached_content_name = ""
+    try:
+        from context_cache_service import refresh_context_cache_if_needed
+
+        cached_content_name = refresh_context_cache_if_needed(
+            project_context=project_context or "",
+            gemini_key=gemini_api_key,
+            gemini_model=model_name,
+        )
+    except ImportError:
+        cached_content_name = ""
+    llm = _build_gemini_llm(model_name, gemini_api_key, cached_content_name)
     tasks_cfg = config.get("tasks") or []
     if not tasks_cfg:
         return "", []
@@ -263,28 +284,6 @@ def _run_crew_sequential(
 # 需求加载（不依赖 API Key，可单独自检）
 # ---------------------------------------------------------------------------
 
-QUIP_API_BASE = os.getenv("QUIP_API_BASE", "https://platform.quip.com/1").rstrip("/")
-
-
-def _html_to_plain(html_str: str) -> str:
-    """将 Quip 返回的 HTML 转为纯文本（仅用标准库）。"""
-    if not html_str:
-        return ""
-    # 去掉 script/style
-    text = re.sub(r"<script[^>]*>[\s\S]*?</script>", " ", html_str, flags=re.I)
-    text = re.sub(r"<style[^>]*>[\s\S]*?</style>", " ", text, flags=re.I)
-    # 块级标签换行
-    for tag in ("p", "div", "br", "li", "tr", "h[1-6]"):
-        text = re.sub(rf"<{tag}[^>]*>", "\n", text, flags=re.I)
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
-    # 去掉所有标签
-    text = re.sub(r"<[^>]+>", " ", text)
-    # 解码实体并规整空白
-    text = html_lib.unescape(text)
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n\s*\n", "\n\n", text)
-    return text.strip()
-
 
 def desensitize_for_llm(text: str) -> str:
     """对传给大模型的文本做基础脱敏处理，掩盖明显的账号、邮箱等敏感信息。
@@ -297,206 +296,6 @@ def desensitize_for_llm(text: str) -> str:
     # 掩盖连续 16 位及以上数字（如可能的卡号）
     out = re.sub(r"\b\d{16,}\b", "[NUMBER_MASKED]", out)
     return out
-
-
-def _extract_quip_id_from_url(value: str) -> str:
-    """从 Quip URL 提取 id（第一个路径段）。如 https://wegrowth.quip.com/0lXLAKptNvz1/goalPoll → 0lXLAKptNvz1"""
-    value = value.strip()
-    if not value or not value.startswith("http"):
-        return value
-    from urllib.parse import urlparse
-    parsed = urlparse(value)
-    path = (parsed.path or "").strip("/")
-    if path:
-        return path.split("/")[0]
-    return ""
-
-
-def _extract_quip_thread_id(value: str) -> str:
-    """从 Quip 文档 URL 或纯 thread_id 中提取 thread_id。"""
-    value = value.strip()
-    if not value:
-        return ""
-    if value.startswith("http"):
-        return _extract_quip_id_from_url(value)
-    return value
-
-
-def load_demand_from_quip(thread_id_or_url: str, return_title: bool = False) -> str | tuple[str, str]:
-    """从 Quip 文档读取内容。需设置环境变量 QUIP_ACCESS_TOKEN。可传 thread_id 或文档 URL。
-    若 return_title=True，返回 (content, title)。"""
-    token = os.getenv("QUIP_ACCESS_TOKEN")
-    if not token:
-        raise ValueError("从 Quip 读取需设置环境变量 QUIP_ACCESS_TOKEN。请在 https://quip.com/dev/token 生成。")
-    thread_id = _extract_quip_thread_id(thread_id_or_url)
-    if not thread_id:
-        raise ValueError("Quip thread_id 不能为空。")
-    url = f"{QUIP_API_BASE}/threads/{thread_id}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        raise ValueError(f"Quip API 请求失败 {e.code}: {body[:200]}") from e
-    raw_html = data.get("html") or ""
-    plain = _html_to_plain(raw_html)
-    if not plain:
-        raise ValueError(f"Quip 文档 {thread_id} 无正文内容或无法解析。")
-    if return_title:
-        thread = data.get("thread") or (data.get(thread_id) or {}).get("thread") or data
-        if isinstance(thread, dict):
-            title = (thread.get("title") or thread.get("link") or "").strip()[:200]
-        else:
-            title = ""
-        fallback = (plain.split("\n")[0].strip() or "需求文档")[:100]
-        return plain, (title or fallback)
-    return plain
-
-
-def _extract_quip_id(value: str) -> str:
-    """从 Quip URL 或纯 id 中提取。与 _extract_quip_thread_id 一致，适用于文件夹/文档。"""
-    value = value.strip()
-    if not value:
-        return ""
-    if value.startswith("http"):
-        return _extract_quip_id_from_url(value)
-    return value
-
-
-def get_quip_folder_thread_ids(folder_id_or_url: str) -> list[tuple[str, str]]:
-    """获取 Quip 文件夹内所有文档的 (thread_id, title)。递归遍历子文件夹。需 QUIP_ACCESS_TOKEN。"""
-    token = os.getenv("QUIP_ACCESS_TOKEN")
-    if not token:
-        raise ValueError("从 Quip 读取需设置环境变量 QUIP_ACCESS_TOKEN。")
-    folder_id = _extract_quip_id(folder_id_or_url)
-    if not folder_id:
-        raise ValueError("Quip 文件夹 ID 或 URL 不能为空。")
-    result: list[tuple[str, str]] = []
-    seen: set[str] = set()
-
-    delay = float(os.getenv("QUIP_RATE_LIMIT_DELAY", "1.5"))  # 秒，避免 Over Rate Limit
-
-    def _fetch_folder(fid: str) -> None:
-        if fid in seen:
-            return
-        seen.add(fid)
-        time.sleep(delay)
-        url = f"{QUIP_API_BASE}/folders/{fid}"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-        for attempt in range(3):
-            try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                break
-            except urllib.error.HTTPError as e:
-                if e.code == 503 and attempt < 2:
-                    time.sleep(60)
-                    continue
-                body = e.read().decode("utf-8", errors="replace")
-                raise ValueError(f"Quip 文件夹请求失败 {e.code}: {body[:200]}") from e
-        children = data.get("children") or []
-        for c in children:
-            if "thread_id" in c:
-                tid = c["thread_id"]
-                title = ""
-                try:
-                    time.sleep(delay)
-                    turl = f"{QUIP_API_BASE}/threads/{tid}"
-                    treq = urllib.request.Request(turl, headers={"Authorization": f"Bearer {token}"})
-                    for _ in range(2):
-                        try:
-                            with urllib.request.urlopen(treq, timeout=15) as tr:
-                                tdata = json.loads(tr.read().decode("utf-8"))
-                            break
-                        except urllib.error.HTTPError as te:
-                            if te.code == 503:
-                                time.sleep(60)
-                                continue
-                            raise
-                    thread = tdata.get("thread") or tdata
-                    title = thread.get("title") or thread.get("link") or tid
-                except Exception:
-                    pass
-                result.append((tid, title or tid))
-            elif "folder_id" in c:
-                _fetch_folder(c["folder_id"])
-
-    _fetch_folder(folder_id)
-    return result
-
-
-def load_demands_from_quip_folder(
-    folder_id_or_url: str,
-    progress_callback: Callable[[int, int, str], None] | None = None,
-    batch_size: int = 10,
-    batch_pause: float = 60.0,
-    progress_info: dict | None = None,
-) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    """从 Quip 文件夹批量导入需求文档。遇 503 自动降批直到不报错。
-    自动过滤非产品需求文档（测试用例、UI走查、进度汇总等），仅保留 PRD。
-    返回 (docs, {"stable_batch_size", "stable_batch_pause", "batch_reduced", "filtered_count"})。"""
-    base_url = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
-    delay = float(os.getenv("QUIP_RATE_LIMIT_DELAY", "1.5"))
-    pairs = get_quip_folder_thread_ids(folder_id_or_url)
-    total = len(pairs)
-    out: list[dict[str, str]] = []
-    docs_in_batch = 0
-    batch_reduced = False
-    filtered_count = 0
-    i = 0
-    while i < len(pairs):
-        tid, title = pairs[i]
-        if progress_callback:
-            progress_callback(i, total, title or tid)
-        if docs_in_batch >= batch_size and batch_size > 0:
-            time.sleep(batch_pause)
-            docs_in_batch = 0  # 批间暂停后重置计数
-        try:
-            time.sleep(delay)
-            content = None
-            for attempt in range(5):
-                try:
-                    content = load_demand_from_quip(tid)
-                    break
-                except Exception as le:
-                    if "503" in str(le) and attempt < 4:
-                        batch_size = max(1, batch_size - 1)
-                        docs_in_batch = 0
-                        batch_reduced = True
-                        if progress_info is not None:
-                            progress_info["batch_size"] = batch_size
-                            progress_info["batch_reduced"] = True
-                        if progress_callback:
-                            progress_callback(i, total, f"503 限流，降批至 {batch_size}，等待后重试…")
-                        time.sleep(120)
-                        continue
-                    raise
-            if content and content.strip():
-                keep, reason = is_product_requirement_doc(title or "", content)
-                if keep:
-                    out.append({
-                        "thread_id": tid,
-                        "title": title,
-                        "content": content,
-                        "quip_url": f"{base_url}/{tid}",
-                    })
-                    docs_in_batch += 1
-                else:
-                    filtered_count += 1
-                    if progress_callback:
-                        progress_callback(i, total, f"[过滤] {title or tid} ({reason})")
-        except Exception:
-            pass
-        i += 1
-    if progress_callback:
-        progress_callback(total, total, "完成")
-    return out, {
-        "stable_batch_size": batch_size,
-        "stable_batch_pause": batch_pause,
-        "batch_reduced": batch_reduced,
-        "filtered_count": filtered_count,
-    }
 
 
 def load_demand(file_path: str | None) -> str:
@@ -526,11 +325,18 @@ def _get_crew_with_config(
     if not gemini_api_key:
         raise ValueError("ERROR: GEMINI_API_KEY 未设置。")
     model_name = _resolve_gemini_model(os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"))
-    llm = ChatGoogleGenerativeAI(
-        model=model_name,
-        google_api_key=gemini_api_key,
-        temperature=0.4,
-    )
+    cached_content_name = ""
+    try:
+        from context_cache_service import refresh_context_cache_if_needed
+
+        cached_content_name = refresh_context_cache_if_needed(
+            project_context=project_context or "",
+            gemini_key=gemini_api_key,
+            gemini_model=model_name,
+        )
+    except ImportError:
+        cached_content_name = ""
+    llm = _build_gemini_llm(model_name, gemini_api_key, cached_content_name)
     return _build_crew_from_config(agents_config, llm, project_context, stream=stream)
 
 
@@ -542,7 +348,7 @@ def chat_with_document_agent(
 ) -> str:
     """与产品文档管理 Agent（文档分析师）沟通：基于文档内容回答用户问题。
     用于验证 Agent 对文档的理解，或对文档进行问答。
-    - document_context: 需求文档内容（来自 Quip 拉取、项目记忆或手动粘贴）
+    - document_context: 需求文档内容（来自项目记忆或手动粘贴）
     - project_context: 项目记忆摘要（可选）
     """
     if not user_message or not user_message.strip():
@@ -555,11 +361,7 @@ def chat_with_document_agent(
         raise ValueError("GEMINI_API_KEY 未设置，请先配置。")
 
     model_name = _resolve_gemini_model(os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"))
-    llm = ChatGoogleGenerativeAI(
-        model=model_name,
-        google_api_key=gemini_api_key,
-        temperature=0.3,
-    )
+    llm = _build_gemini_llm(model_name, gemini_api_key)
 
     config = load_agents_config(agents_config_path or AGENTS_CONFIG_PATH)
     agents_cfg = config.get("agents") or []
@@ -927,92 +729,6 @@ def export_tables_to_excel_bytes(tables: list[list[list[str]]]) -> bytes | None:
     return buf.getvalue()
 
 
-def _tables_to_html(tables: list[list[list[str]]]) -> str:
-    """将表格列表转为 HTML 字符串。"""
-    rows_html = []
-    for tbl in tables:
-        for i, row in enumerate(tbl):
-            tag = "th" if i == 0 else "td"
-            cells = "".join(f"<{tag}>{html_lib.escape(c)}</{tag}>" for c in row)
-            rows_html.append(f"<tr>{cells}</tr>")
-    return "<table border=\"1\"><tbody>" + "".join(rows_html) + "</tbody></table>"
-
-
-def _export_to_quip_table(tables: list[list[list[str]]], title: str) -> str | None:
-    """在 Quip 中新建文档并写入表格（HTML）。需 QUIP_ACCESS_TOKEN。返回新文档 URL 或 None。"""
-    if not tables:
-        return None
-    token = os.getenv("QUIP_ACCESS_TOKEN")
-    if not token:
-        print("提示: 导出到 Quip 需设置 QUIP_ACCESS_TOKEN", file=sys.stderr)
-        return None
-    table_html = _tables_to_html(tables)
-    body = f"<h1>{html_lib.escape(title)}</h1><p>以下为自动生成的测试用例表格。</p>{table_html}"
-    url = f"{QUIP_API_BASE}/threads/new-document"
-    data = urllib.parse.urlencode({"content": body, "format": "html", "title": title}).encode()
-    req = urllib.request.Request(url, data=data, method="POST", headers={"Authorization": f"Bearer {token}", "Content-Type": "application/x-www-form-urlencoded"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            doc = json.loads(resp.read().decode())
-        thread_id = doc.get("id") or (doc.get("thread") or {}).get("id")
-        if thread_id:
-            base = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
-            return f"{base}/{thread_id}"
-        return None
-    except Exception as e:
-        print(f"导出到 Quip 失败: {e}", file=sys.stderr)
-        return None
-
-
-def _export_to_quip_existing(
-    target_thread_id_or_url: str,
-    demand_title: str,
-    tables: list[list[list[str]]],
-) -> str | None:
-    """向指定 Quip 文档末尾追加「需求标题 + 测试用例表格」。需 QUIP_ACCESS_TOKEN。返回文档 URL 或 None。"""
-    if not tables:
-        return None
-    token = os.getenv("QUIP_ACCESS_TOKEN")
-    if not token:
-        print("提示: 导出到 Quip 需设置 QUIP_ACCESS_TOKEN", file=sys.stderr)
-        return None
-    thread_id = _extract_quip_thread_id(target_thread_id_or_url)
-    if not thread_id:
-        print("提示: 无法解析目标 Quip 文档 ID", file=sys.stderr)
-        return None
-    table_html = _tables_to_html(tables)
-    body = f"<h2>{html_lib.escape(demand_title)}</h2><p>以下为自动生成的测试用例。</p>{table_html}"
-    url = f"{QUIP_API_BASE}/threads/edit-document"
-    payload = {
-        "thread_id": thread_id,
-        "content": body,
-        "format": "html",
-        "location": 0,  # 0 = APPEND, 追加到文档末尾（仅文档支持，电子表格需用 section_id）
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            _ = json.loads(resp.read().decode())
-        base = os.getenv("QUIP_BASE_URL", "https://quip.com").rstrip("/")
-        return f"{base}/{thread_id}"
-    except urllib.error.HTTPError as e:
-        body_err = e.read().decode("utf-8", errors="replace")[:500]
-        print(f"导出到指定 Quip 文档失败: HTTP {e.code} - {body_err}", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"导出到指定 Quip 文档失败: {e}", file=sys.stderr)
-        return None
-
-
 def _export_to_google_sheets(tables: list[list[list[str]]], title: str) -> str | None:
     """将表格写入 Google Sheets 新建表格。需配置 GOOGLE_SHEETS_CREDENTIALS_JSON（服务账号 JSON 路径或内容）。返回表格 URL 或 None。"""
     if not tables:
@@ -1152,6 +868,12 @@ def update_project_memory(addition: str, path: str | None = None, max_chars: int
         new_content = "...\n\n" + new_content[-max_chars:]
     with open(p, "w", encoding="utf-8") as f:
         f.write(new_content)
+    try:
+        from context_cache_service import mark_context_cache_dirty
+
+        mark_context_cache_dirty("project_memory_updated")
+    except ImportError:
+        pass
 
 
 def run_mock_pipeline(demand: str, output_dir: str = OUTPUT_DIR) -> str:
@@ -1185,7 +907,6 @@ def run_local_crew_pipeline(
     demand: str,
     output_dir: str = OUTPUT_DIR,
     export_excel: bool = True,
-    export_quip: bool = False,
     export_sheets: bool = False,
 ) -> str:
     """不调用 Gemini：按四 Agent 顺序产出占位结果（含 Markdown 表格），并复用保存/导出逻辑。"""
@@ -1206,10 +927,6 @@ def run_local_crew_pipeline(
             excel_path = os.path.join(output_dir, f"测试用例_{title_slug}_{timestamp}.xlsx")
             if _export_to_excel(tables, excel_path):
                 print(f"Excel 已导出: {excel_path}")
-        if export_quip:
-            quip_url = _export_to_quip_table(tables, f"测试用例_{timestamp}")
-            if quip_url:
-                print(f"Quip 文档已创建: {quip_url}")
         if export_sheets:
             sheets_url = _export_to_google_sheets(tables, f"测试用例_{timestamp}")
             if sheets_url:
@@ -1223,18 +940,14 @@ def run_pipeline(
     mock: bool = False,
     local: bool = False,
     export_excel: bool = True,
-    export_quip: bool = False,
     export_sheets: bool = False,
-    export_quip_target: str | None = None,
     demand_title: str | None = None,
     agents_config_path: str | None = None,
     project_context: str | None = None,
     return_details: bool = False,
 ) -> str | dict[str, Any]:
-    """跑完整个流程，并把结果写入 output_dir。可同时导出 Excel / Quip / Google 表格。
-    - export_quip_target: 指定 Quip 文档链接时，将需求标题+用例追加到该文档末尾；否则新建文档。
-    - demand_title: 需求标题，用于导出到指定文档时的标题。
-    若 return_details=True，返回 dict：result_str, step_outputs, excel_path, quip_url, sheets_url, timestamp；否则返回 result_str。"""
+    """跑完整个流程，并把结果写入 output_dir。可同时导出 Excel / Google 表格。
+    若 return_details=True，返回 dict：result_str, step_outputs, excel_path, sheets_url, timestamp；否则返回 result_str。"""
     if mock:
         return run_mock_pipeline(demand, output_dir)
     if local:
@@ -1242,11 +955,8 @@ def run_pipeline(
             demand,
             output_dir=output_dir,
             export_excel=export_excel,
-            export_quip=export_quip,
             export_sheets=export_sheets,
         )
-
-    do_export_quip = export_quip or bool(export_quip_target)
 
     use_config = bool(agents_config_path or os.path.isfile(AGENTS_CONFIG_PATH))
     proj_ctx = project_context if project_context is not None else get_project_context_for_agent()
@@ -1255,7 +965,6 @@ def run_pipeline(
     # 入参脱敏：仅对传入大模型的内容做掩码处理，本地保存仍保留原始需求文本
     llm_demand = desensitize_for_llm(demand)
     step_outputs: list[dict[str, str]] = []
-    quip_url: str | None = None
     sheets_url: str | None = None
     excel_path: str | None = None
 
@@ -1290,25 +999,12 @@ def run_pipeline(
             if _export_to_excel(tables, excel_path):
                 if not stream:
                     print(f"Excel 已导出（可直接下载）: {excel_path}")
-        if do_export_quip:
-            if export_quip_target:
-                quip_url = _export_to_quip_existing(
-                    export_quip_target,
-                    demand_title or "需求文档",
-                    tables,
-                )
-                if quip_url and not stream:
-                    print(f"已追加到 Quip 文档: {quip_url}")
-            else:
-                quip_url = _export_to_quip_table(tables, f"测试用例_{timestamp}")
-                if quip_url and not stream:
-                    print(f"Quip 文档已创建: {quip_url}")
         if export_sheets:
             sheets_url = _export_to_google_sheets(tables, f"测试用例_{timestamp}")
             if sheets_url and not stream:
                 print(f"Google 表格已创建: {sheets_url}")
     else:
-        if export_excel or do_export_quip or export_sheets:
+        if export_excel or export_sheets:
             if not stream:
                 print("提示: 未从输出中解析到 Markdown 表格，未执行表格导出。", file=sys.stderr)
         excel_path = None
@@ -1318,7 +1014,6 @@ def run_pipeline(
             "result_str": result_str,
             "step_outputs": step_outputs,
             "excel_path": excel_path,
-            "quip_url": quip_url,
             "sheets_url": sheets_url,
             "timestamp": timestamp,
             "txt_path": out_path,
@@ -1355,51 +1050,26 @@ def main() -> int:
         help="本地占位模式：不调用 Gemini，按四 Agent 顺序产出占位结果并正常导出 Excel。",
     )
     parser.add_argument(
-        "-q",
-        "--quip",
-        default=None,
-        metavar="THREAD_ID",
-        help="从 Quip 文档读取需求（需 QUIP_ACCESS_TOKEN）。可传 thread_id 或文档 URL，如 https://quip.com/xxx。",
-    )
-    parser.add_argument(
         "--no-excel",
         action="store_true",
         help="不导出 Excel（默认会从输出中解析表格并导出 .xlsx 到 output/）。",
-    )
-    parser.add_argument(
-        "--export-quip",
-        action="store_true",
-        help="在 Quip 中新建文档并写入测试用例表格（需 QUIP_ACCESS_TOKEN）。",
     )
     parser.add_argument(
         "--export-sheets",
         action="store_true",
         help="导出到 Google 表格（需 GOOGLE_SHEETS_CREDENTIALS_JSON 环境变量）。",
     )
-    parser.add_argument(
-        "--export-quip-target",
-        default=None,
-        metavar="URL",
-        help="导出到指定 Quip 文档（追加需求标题+用例到该文档末尾）。可传 URL 或 thread_id。",
-    )
     args = parser.parse_args()
 
-    demand_title = None
-    if args.quip:
-        demand, demand_title = load_demand_from_quip(args.quip, return_title=True)
-        tid = _extract_quip_thread_id(args.quip)
-        print(f"已从 Quip 文档加载需求: thread_id={tid}, title={demand_title[:50] if demand_title else ''}...")
+    file_path = args.file
+    if file_path is None and os.path.isfile(DEFAULT_REQUIREMENT_FILE):
+        file_path = DEFAULT_REQUIREMENT_FILE
+    demand = load_demand(file_path)
+    if file_path:
+        print(f"已从文件加载需求: {os.path.abspath(file_path)}")
     else:
-        file_path = args.file
-        if file_path is None and os.path.isfile(DEFAULT_REQUIREMENT_FILE):
-            file_path = DEFAULT_REQUIREMENT_FILE
-        demand = load_demand(file_path)
-        if file_path:
-            print(f"已从文件加载需求: {os.path.abspath(file_path)}")
-        else:
-            print("使用环境变量 DEMAND 或内置默认需求")
+        print("使用环境变量 DEMAND 或内置默认需求")
 
-    do_export_quip = args.export_quip or bool(args.export_quip_target)
     try:
         run_pipeline(
             demand,
@@ -1407,10 +1077,7 @@ def main() -> int:
             mock=args.mock,
             local=args.local,
             export_excel=not args.no_excel,
-            export_quip=do_export_quip,
             export_sheets=args.export_sheets,
-            export_quip_target=(args.export_quip_target or "").strip() or None,
-            demand_title=demand_title,
         )
         return 0
     except Exception as e:

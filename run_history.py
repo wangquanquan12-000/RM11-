@@ -72,7 +72,6 @@ def add_run_record(
     result_str: str,
     excel_path: str | None = None,
     txt_path: str | None = None,
-    quip_url: str | None = None,
     sheets_url: str | None = None,
 ) -> str | None:
     """追加一条生成记录。返回 record_id，失败返回 None。
@@ -88,7 +87,6 @@ def add_run_record(
         "result_str": preview,
         "excel_path": excel_path or "",
         "txt_path": txt_path or "",
-        "quip_url": quip_url or "",
         "sheets_url": sheets_url or "",
     }
     items = _load_history()

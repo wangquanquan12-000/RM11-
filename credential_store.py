@@ -9,7 +9,8 @@ import os
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 DEFAULTS_PATH = os.path.join(CONFIG_DIR, "defaults.json")
 SERVICE_NAME = "test_case_pipeline"
-KEYS = ("quip_token", "gemini_key", "gemini_model")
+# 仅保留 Gemini 凭证
+KEYS = ("gemini_key", "gemini_model")
 
 _keyring_available: bool | None = None
 
@@ -79,11 +80,10 @@ def _save_to_json(data: dict[str, str]) -> None:
 def get_credentials() -> dict[str, str]:
     """
     读取凭证：环境变量优先，其次 Keyring，最后 JSON。
-    返回 {quip_token, gemini_key, gemini_model}，缺省为 ""。
+    返回 {gemini_key, gemini_model}，缺省为 ""。
     若 Keyring 可用且为空、defaults.json 有数据，则自动迁移。
     """
     out: dict[str, str] = {
-        "quip_token": os.getenv("QUIP_ACCESS_TOKEN", ""),
         "gemini_key": os.getenv("GEMINI_API_KEY", ""),
         "gemini_model": os.getenv("GEMINI_MODEL", ""),
     }
@@ -105,13 +105,12 @@ def get_credentials() -> dict[str, str]:
     return out
 
 
-def set_credentials(quip_token: str, gemini_key: str, gemini_model: str = "") -> tuple[bool, str]:
+def set_credentials(gemini_key: str, gemini_model: str = "") -> tuple[bool, str]:
     """
-    保存凭证。优先 Keyring，失败则 JSON。
+    保存 Gemini 凭证。优先 Keyring，失败则 JSON。
     返回 (成功, 存储方式说明)
     """
     data: dict[str, str] = {
-        "quip_token": (quip_token or "").strip(),
         "gemini_key": (gemini_key or "").strip(),
         "gemini_model": (gemini_model or "gemini-2.5-flash-lite").strip(),
     }

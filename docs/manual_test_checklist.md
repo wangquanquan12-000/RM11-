@@ -35,6 +35,6 @@ python3 -m streamlit run app_ui.py --server.port 8501
 - [ ] 编辑 Agent 有未保存修改时顶部提示「您有未保存的修改」；文档问答区上方显示「当前文档：xxx」
 
 ## 5. 凭证存储（Keyring）
-- [ ] 在「设置」页保存 Quip Token / Gemini Key
+- [ ] 在「设置」页保存 Gemini Key
 - [ ] 刷新页面，凭证仍存在（Keyring 或 JSON 降级）
 - [ ] 成功提示显示存储方式（Keyring / JSON）

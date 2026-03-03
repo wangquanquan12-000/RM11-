@@ -10,8 +10,8 @@
 | 项目 | 说明 |
 |------|------|
 | **产品** | AI 测试流水线平台（Streamlit） |
-| **当前核心业务** | 4 个 Agent 协作，将 Quip 需求文档 → 标准测试用例，支持追加归档 |
-| **架构目标** | 预判 Jira 来源、API 测试生成 Agent、飞书对接等大量新需求；新需求以「工作台模块」形式接入，与现有 Quip 转用例互不干扰 |
+| **当前核心业务** | 4 个 Agent 协作，将需求文档 → 标准测试用例，支持追加归档 |
+| **架构目标** | 预判 Jira 来源、API 测试生成 Agent、飞书对接等大量新需求；新需求以「工作台模块」形式接入，与现有需求转用例模块互不干扰 |
 
 ---
 
@@ -28,7 +28,7 @@
 
 ### 2.2 插件化 / 模块化布局（工作台模式）
 
-- **原则**：整体形态为「应用市场 / 工作台」，当前「Quip 转用例」仅为其中一个独立 App/Plugin；未来新增 Jira、API 测试、飞书等，均为新模块。
+- **原则**：整体形态为「应用市场 / 工作台」，当前「需求转用例」仅为其中一个独立 App/Plugin；未来新增 Jira、API 测试、飞书等，均为新模块。
 - **实现方式**（二选一或组合）：
   - **动态 Tab**：Tab 列表来自配置，每个 Tab 对应一个模块的渲染函数；新增模块 = 配置中增加一项 + 实现一个渲染函数并注册。
   - **st.navigation**（Streamlit 1.30+）：若版本支持，采用 `st.navigation` 做多页/多应用切换，每页对应一个业务模块。
@@ -44,15 +44,15 @@
   ```yaml
   # 当前任务/上下文（各模块读写时使用）
   session_state.current_task_context:
-    module_id: str          # 当前所在模块 id，如 "quip_to_cases"
+    module_id: str          # 当前所在模块 id，如 "run"
     task_id: str            # 当前任务/运行 id，便于日志与进度关联
-    input_summary: dict     # 当前输入摘要（如 quip_url, demand_title）
-    output_summary: dict    # 当前输出摘要（如 excel_path, quip_url）
+    input_summary: dict     # 当前输入摘要（如 demand_title 等）
+    output_summary: dict    # 当前输出摘要（如 excel_path 等）
     started_at: str         # ISO 时间
     status: str             # pending | running | success | error
-
+  
   # 各模块自己的状态（必须带模块前缀，避免冲突）
-  session_state["app_<module_id>_*"]   # 例如 app_quip_to_cases_last_run
+  session_state["app_<module_id>_*"]
   ```
 
 - **禁止**：在未约定命名空间下随意使用 `st.session_state["xxx"]`；历史已有 key（如 `app_last_run`）在重构时迁入上述约定并保留兼容。
@@ -85,7 +85,7 @@
 实现完成后，需满足：
 
 - [ ] 所有工具入口、Agent 配置项、模型下拉框均来自 config，无写死列表。
-- [ ] 工作台为「模块列表 + 当前模块内容」布局，Quip 转用例仅为其中一个模块；新增一个「占位模块」即可验证扩展路径。
+- [ ] 工作台为「模块列表 + 当前模块内容」布局，需求转用例仅为其中一个模块；新增一个「占位模块」即可验证扩展路径。
 - [ ] `session_state` 存在约定的 `current_task_context` 及模块前缀规范，文档中注明 key 表。
 
 ### session_state key 一览表（约定）
@@ -93,15 +93,15 @@
 | Key | 说明 |
 |-----|------|
 | `current_task_context` | 当前任务上下文：module_id, task_id, input_summary, output_summary, started_at, status |
-| `app_quip_to_cases_last_run` | 生成用例模块上次运行结果（与 app_last_run 兼容） |
-| `app_quip_to_cases_running` | 生成用例是否正在运行 |
+| `app_run_last_run` | 生成用例模块上次运行结果（与 app_last_run 兼容） |
+| `app_run_running` | 生成用例是否正在运行 |
 | `app_agents_dirty` | 编辑 Agent 是否有未保存修改 |
 | `app_agents_last_saved_hash` | 上次保存的 agents 配置摘要，用于比对 |
 | `app_doc_chat_messages` | 文档问答对话列表 |
-| `app_last_run` | （兼容）同 app_quip_to_cases_last_run |
+| `app_last_run` | （兼容）同 app_run_last_run |
 | `app_last_demand_snippet` / `app_last_demand_full` | （兼容）上次需求摘要 |
 - [ ] 至少 3 个公用组件（进度条 / 上传 / 日志）已抽出并在至少 2 处复用。
-- [ ] 现有「Quip 转用例 + 编辑 Agent + 项目记忆 + 文档问答」功能行为保持不变（可做回归用例）。
+- [ ] 现有「需求转用例 + 编辑 Agent + 项目记忆 + 文档问答」功能行为保持不变（可做回归用例）。
 
 ---
 

@@ -4,7 +4,7 @@
 # order: 排序，数字小靠前
 # enabled: 是否展示
 apps:
-  - id: quip_to_cases
+  - id: run
     label_key: tabs.run
     label: "生成用例"
     order: 1

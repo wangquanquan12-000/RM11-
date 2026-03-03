@@ -16,7 +16,6 @@ def test_get_credentials_returns_dict():
     from credential_store import get_credentials
     creds = get_credentials()
     assert isinstance(creds, dict)
-    assert "quip_token" in creds
     assert "gemini_key" in creds
     assert "gemini_model" in creds
     assert creds.get("gemini_model") or True  # 至少有一项
@@ -24,6 +23,6 @@ def test_get_credentials_returns_dict():
 
 def test_set_credentials():
     from credential_store import set_credentials, get_credentials
-    ok, mode = set_credentials("", "", "gemini-2.5-flash-lite")
+    ok, mode = set_credentials("", "gemini-2.5-flash-lite")
     assert ok
     assert mode in ("Keyring", "JSON", "JSON（Keyring 不可用）")
