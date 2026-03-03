@@ -226,7 +226,10 @@ def _run_crew_sequential(
             agent=agent,
             context=None,
         )
-        crew = Crew(agents=[agent], tasks=[task_obj], verbose=True, stream=stream)
+        # 顺序执行模式不需要每个任务单独流式：流式分支会导致 out_str 变成
+        # "<generator object ...>" 或对象表示字符串，使 task3 输出丢失、Excel 无法导出。
+        # 统一使用非流式执行，通过 .raw 可靠获取每步完整输出。
+        crew = Crew(agents=[agent], tasks=[task_obj], verbose=True)
 
         inputs: dict[str, str] = {"prd_content": llm_demand}
         if outputs.get("task1"):
@@ -236,20 +239,8 @@ def _run_crew_sequential(
         if outputs.get("task3"):
             inputs["task3_output"] = outputs["task3"]
 
-        if stream:
-            kickoff_result = crew.kickoff(inputs=inputs)
-            try:
-                current_content: list[str] = []
-                for chunk in kickoff_result:
-                    if getattr(chunk, "content", None):
-                        current_content.append(chunk.content)
-                raw = getattr(kickoff_result, "result", kickoff_result)
-                out_str = str(getattr(raw, "raw", raw))
-            except Exception:
-                out_str = str(crew.kickoff(inputs=inputs))
-        else:
-            result = crew.kickoff(inputs=inputs)
-            out_str = str(getattr(result, "raw", result))
+        result = crew.kickoff(inputs=inputs)
+        out_str = str(getattr(result, "raw", result))
 
         out_str = (out_str or "").strip()
         outputs[tid] = out_str
