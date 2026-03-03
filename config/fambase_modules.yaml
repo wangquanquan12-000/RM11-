@@ -1,0 +1,267 @@
+# Fambase 功能模块定义 · 用于主模块/子模块与用例编号
+# 用例编号格式：主模块缩写-序号，如 LIV-0001、ACT-0002
+# 主模块、子模块名称需与需求文档中的表述一致，Agent 生成用例时严格参照此表
+
+modules:
+  - main: Account
+    abbrev: ACT
+    priority: P0
+    sub_modules:
+      - name: NoInviteRegister
+        abbrev: NIR
+      - name: HaveInviteRegister
+        abbrev: HIR
+      - name: Login
+        abbrev: LGI
+      - name: Logout
+        abbrev: LGO
+      - name: AccountInfo
+        abbrev: ACI
+      - name: SwitchAccount
+        abbrev: SWC
+      - name: DeleteAccount
+        abbrev: DLT
+
+  - main: Conversation
+    abbrev: CVS
+    priority: P0
+    sub_modules:
+      - name: JoinGroup
+        abbrev: JGP
+      - name: CreateGroup
+        abbrev: CGP
+      - name: CreateChat
+        abbrev: CCT
+      - name: SendMessage
+        abbrev: SDM
+      - name: ReceiveMessage
+        abbrev: RCM
+      - name: ManageMessage
+        abbrev: MGM
+      - name: FullView
+        abbrev: FVL
+      - name: Invite
+        abbrev: INV
+      - name: ConversationSettings
+        abbrev: CST
+      - name: ConversationList
+        abbrev: CLT
+      - name: ConversationBanner
+        abbrev: CBN
+      - name: ConversationDetail
+        abbrev: CDT
+      - name: ConversationGift
+        abbrev: CGF
+      - name: Dashbord
+        abbrev: DSB
+      - name: Mute
+        abbrev: MUT
+      - name: SearchMember
+        abbrev: SMB
+      - name: PaidMedia
+        abbrev: PMD
+
+  - main: Live
+    abbrev: LIV
+    priority: P0
+    sub_modules:
+      - name: StartLive
+        abbrev: STL
+      - name: EndLive
+        abbrev: EDL
+      - name: JoinLive
+        abbrev: JNL
+      - name: LiveGift
+        abbrev: LGF
+      - name: Flip
+        abbrev: FLP
+      - name: Beauty
+        abbrev: BTY
+      - name: Filter
+        abbrev: FLT
+      - name: PaidLive
+        abbrev: PDL
+      - name: Divide
+        abbrev: DIV
+      - name: Extension
+        abbrev: EXT
+      - name: ShowDiamond
+        abbrev: SHD
+      - name: Wheel
+        abbrev: WHL
+      - name: Mirror
+        abbrev: MIR
+      - name: Viewers
+        abbrev: VWR
+      - name: SendLiveMessage
+        abbrev: SLM
+      - name: ReceiveLiveMessage
+        abbrev: RLM
+      - name: LiveAnnouncement
+        abbrev: LAN
+      - name: LiveWith
+        abbrev: LWV
+      - name: Network
+        abbrev: NWK
+      - name: LiveQuality
+        abbrev: LQL
+      - name: Earphone
+        abbrev: EAR
+
+  - main: Payment
+    abbrev: PAY
+    priority: P0
+    sub_modules:
+      - name: AppleIAP
+        abbrev: AIP
+      - name: GoogleIAP
+        abbrev: GIP
+      - name: CardRecharge
+        abbrev: CRG
+      - name: BalanceToCoins
+        abbrev: BTC
+      - name: ManageCard
+        abbrev: MGC
+      - name: "3Ds"
+        abbrev: TDS
+      - name: CoinsBalance
+        abbrev: CBL
+      - name: SendCoins
+        abbrev: SNC
+      - name: Income
+        abbrev: INC
+      - name: Withdraw
+        abbrev: WTD
+      - name: FirstRecharge
+        abbrev: FRC
+      - name: Transcation
+        abbrev: TRN
+
+  - main: GIFT
+    abbrev: GFT
+    priority: P0
+    sub_modules:
+      - name: SendGift
+        abbrev: SGF
+      - name: ReceiveGift
+        abbrev: RGF
+
+  - main: "Me/Profile"
+    abbrev: MEP
+    priority: P0
+    sub_modules:
+      - name: MEPInfo
+        abbrev: MPI
+      - name: EditProfile
+        abbrev: EDP
+      - name: Plus
+        abbrev: PLS
+      - name: ManageNotification
+        abbrev: MNT
+      - name: ScanQRCode
+        abbrev: SQR
+      - name: Settings
+        abbrev: SET
+
+  - main: Burn
+    abbrev: BRN
+    priority: P1
+    sub_modules:
+      - name: BurnMessage
+        abbrev: BMG
+      - name: BurnConversation
+        abbrev: BCV
+
+  - main: Settings
+    abbrev: SET
+    priority: P1
+    sub_modules:
+      - name: AdminMod
+        abbrev: ADM
+      - name: BlockList
+        abbrev: BKL
+      - name: HelpCenter
+        abbrev: HPC
+      - name: Apprearance
+        abbrev: APP
+      - name: About
+        abbrev: ABT
+      - name: Rate
+        abbrev: RAT
+
+  - main: Friends
+    abbrev: FRD
+    priority: P1
+    sub_modules:
+      - name: MangeFriendship
+        abbrev: MGF
+      - name: FriendsList
+        abbrev: FRL
+
+  - main: ConversationTag
+    abbrev: CTG
+    priority: P1
+    sub_modules:
+      - name: ManageTag
+        abbrev: MGT
+      - name: TagFilter
+        abbrev: TGF
+
+  - main: Plus
+    abbrev: PLS
+    priority: P2
+    sub_modules:
+      - name: Subscribe
+        abbrev: SBS
+      - name: ManagePlusDetail
+        abbrev: MPD
+
+  - main: TopRank
+    abbrev: TRK
+    priority: P2
+    sub_modules:
+      - name: RankList
+        abbrev: RKL
+
+  - main: TaxSettings
+    abbrev: TAX
+    priority: P2
+    sub_modules:
+      - name: TaxForm
+        abbrev: TFM
+
+  - main: Notification
+    abbrev: NTF
+    priority: P2
+    sub_modules:
+      - name: Mute
+        abbrev: MUT
+      - name: Pause
+        abbrev: PAU
+      - name: NotificationType
+        abbrev: NFT
+
+  - main: Goal
+    abbrev: GOA
+    priority: P3
+    sub_modules:
+      - name: GroupGoal
+        abbrev: GGL
+      - name: LiveGoal
+        abbrev: LGL
+
+  - main: Poll
+    abbrev: POL
+    priority: P3
+    sub_modules:
+      - name: GroupPoll
+        abbrev: GPL
+      - name: LivePoll
+        abbrev: LPL
+
+  - main: Language
+    abbrev: LGG
+    priority: P3
+    sub_modules:
+      - name: SwitchLanguage
+        abbrev: SWL

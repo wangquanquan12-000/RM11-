@@ -79,7 +79,7 @@ def add_run_record(
     result_str 可存全文或预览；若提供 txt_path 则展示时优先从文件读取。"""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     rid = datetime.now().strftime("%Y%m%d_%H%M%S")
-    preview = (result_str or "")[:800]
+    preview = str(result_str or "")[:800]
     record = {
         "id": rid,
         "source_type": source_type,
@@ -119,7 +119,7 @@ def get_full_result(record: dict[str, Any], extra_allowed_dirs: list[str] | None
     extra_allowed_dirs: 额外允许读取的目录（如自定义 workspace_path），用于路径校验。"""
     txt_path = record.get("txt_path") or ""
     if not txt_path or not os.path.isfile(txt_path):
-        return record.get("result_str") or ""
+        return str(record.get("result_str") or "")
     _allowed = _ensure_output_in_allowed_dir(txt_path)
     if not _allowed and extra_allowed_dirs:
         try:
@@ -136,7 +136,7 @@ def get_full_result(record: dict[str, Any], extra_allowed_dirs: list[str] | None
                 return f.read()
         except Exception:
             pass
-    return record.get("result_str") or ""
+    return str(record.get("result_str") or "")
 
 
 def get_excel_filename(record: dict[str, Any]) -> str:

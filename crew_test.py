@@ -43,6 +43,7 @@ OUTPUT_DIR = "output"
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 AGENTS_CONFIG_PATH = os.path.join(CONFIG_DIR, "agents.yaml")
 PROJECT_MEMORY_PATH = os.path.join(CONFIG_DIR, "project_memory.md")
+FAMBASE_MODULES_PATH = os.path.join(CONFIG_DIR, "fambase_modules.yaml")
 DOC_FILTER_PATH = os.path.join(CONFIG_DIR, "doc_filter.yaml")
 
 # 已弃用模型映射（gemini-1.5 / 2.0 系列逐步下线，统一收敛到 2.5）
@@ -862,9 +863,12 @@ def _parse_markdown_tables_inner(text: str) -> list[list[list[str]]]:
 
 def _sanitize_cell_for_excel(value: Any) -> str:
     """防止 Excel 公式注入：以 = + - @ 开头的内容前置单引号。
+    将 <br> 转为换行符，使 Excel 单元格内正确显示换行。
     仅用于导出到 Excel/CSV 等外部文件，对内存中的原始内容不做修改。"""
     s = "" if value is None else str(value)
     s = s.strip()
+    # <br> / <br/> / <br /> 转为换行符，Excel 单元格内可正确显示
+    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)
     if s and s[0] in ("=", "+", "-", "@"):
         return "'" + s
     return s
@@ -1090,9 +1094,34 @@ def load_project_memory(path: str | None = None) -> str:
         return ""
 
 
+def load_fambase_modules_for_agent(path: str | None = None) -> str:
+    """加载 Fambase 模块定义，格式化为供 Agent 使用的文本。用于主模块/子模块与用例编号（主模块缩写-序号）。"""
+    p = path or FAMBASE_MODULES_PATH
+    if not os.path.isfile(p) or not yaml:
+        return ""
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        modules = data.get("modules") or []
+        lines = ["【Fambase 模块定义】主模块与子模块需严格参照下表，用例编号格式：主模块缩写-序号（如 LIV-0001）"]
+        for m in modules:
+            main = m.get("main", "")
+            abbrev = m.get("abbrev", "")
+            pri = m.get("priority", "")
+            subs = m.get("sub_modules") or []
+            sub_str = "；".join(f"{s.get('name','')}({s.get('abbrev','')})" for s in subs if s.get("name"))
+            lines.append(f"- {main} [{abbrev}] {pri}：{sub_str}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def get_project_context_for_agent(include_store: bool = True) -> str:
     """获取供 Agent 使用的项目上下文：知识库存在时用 project_memory + agent_knowledge，否则沿用原逻辑。"""
     md_ctx = load_project_memory()
+    mod_ctx = load_fambase_modules_for_agent()
+    if mod_ctx:
+        md_ctx = (md_ctx + "\n\n" + mod_ctx).strip() if md_ctx else mod_ctx
     if not include_store:
         return md_ctx
     try:
