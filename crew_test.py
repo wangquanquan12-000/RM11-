@@ -45,8 +45,12 @@ AGENTS_CONFIG_PATH = os.path.join(CONFIG_DIR, "agents.yaml")
 PROJECT_MEMORY_PATH = os.path.join(CONFIG_DIR, "project_memory.md")
 DOC_FILTER_PATH = os.path.join(CONFIG_DIR, "doc_filter.yaml")
 
-# 已弃用模型映射（gemini-1.5-pro / gemini-1.5-flash 已于 2025-04 下架）
-_DEPRECATED_GEMINI_MODEL_MAP = {"gemini-1.5-pro": "gemini-2.5-pro", "gemini-1.5-flash": "gemini-2.0-flash"}
+# 已弃用模型映射（gemini-1.5 / 2.0 系列逐步下线，统一收敛到 2.5）
+_DEPRECATED_GEMINI_MODEL_MAP = {
+    "gemini-1.5-pro": "gemini-2.5-pro",
+    "gemini-1.5-flash": "gemini-2.5-flash-lite",
+    "gemini-2.0-flash": "gemini-2.5-flash-lite",
+}
 
 
 def _resolve_gemini_model(model: str) -> str:

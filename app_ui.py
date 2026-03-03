@@ -219,11 +219,11 @@ def _load_models() -> tuple[list[tuple[str, str]], str]:
                     return out, default_key
     except Exception:
         pass
+    # 回退兜底：本地未能读取 config/models.yaml 时的默认模型列表
     return [
-        ("gemini-2.0-flash", "2.0 Flash（原 1.5 Flash 替代，免费实验推荐）"),
-        ("gemini-2.5-pro", "2.5 Pro（原 1.5 Pro 替代，质量高）"),
-        ("gemini-2.5-flash-lite", "2.5 Flash-Lite（免费额度较高）"),
+        ("gemini-2.5-flash-lite", "2.5 Flash-Lite（免费额度较高，推荐）"),
         ("gemini-2.5-flash", "2.5 Flash（付费/免费皆可）"),
+        ("gemini-2.5-pro", "2.5 Pro（原 1.5 Pro 替代，质量高）"),
     ], "gemini-2.5-flash-lite"
 
 

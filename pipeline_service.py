@@ -57,9 +57,13 @@ def _repair_markdown_table_via_llm(
         return ""
     try:
         from langchain_google_genai import ChatGoogleGenerativeAI
+        from crew_test import _resolve_gemini_model
 
         os.environ["GEMINI_API_KEY"] = gemini_key or os.environ.get("GEMINI_API_KEY", "")
-        model = gemini_model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        # 通过统一的模型映射函数规避已下线/弃用模型（如 gemini-2.0-flash）
+        model = _resolve_gemini_model(
+            gemini_model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        )
         if not os.environ.get("GEMINI_API_KEY"):
             return ""
         llm = ChatGoogleGenerativeAI(
