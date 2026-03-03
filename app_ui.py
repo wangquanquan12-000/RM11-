@@ -3,6 +3,8 @@
 可视化界面：上传/粘贴需求 → 四 Agent 流水线 → 测试用例 Excel
 文案可在 config/ui_texts.yaml 中编辑，无需改代码。
 """
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -19,6 +21,7 @@ from crew_test import (
     PROJECT_MEMORY_PATH,
     _export_to_excel,
     _parse_markdown_tables,
+    _resolve_gemini_model,
     chat_with_document_agent,
     get_project_context_for_agent,
     load_agents_config,
@@ -27,17 +30,25 @@ from crew_test import (
     parse_uploaded_files,
     update_project_memory,
 )
-from memory_store import (
-    TEST_CASES_SOURCE_TYPE,
-    add_entry,
-    add_entry_with_dedup,
-    delete_entry,
-    get_entry_content,
-    list_import_history,
-    list_recent,
-    search,
-    update_agent_summary,
-)
+
+try:
+    from memory_store import (
+        TEST_CASES_SOURCE_TYPE,
+        add_entry,
+        add_entry_with_dedup,
+        delete_entry,
+        get_entry_content,
+        list_import_history,
+        list_recent,
+        search,
+        update_agent_summary,
+        DESIGN_MOCKUP_SOURCE_TYPE,
+    )
+    MEMORY_AVAILABLE = True
+except Exception as e:
+    # 线上（如 Streamlit Cloud）若未启用 sqlite3，或 memory_store 后端初始化失败，
+    # 则将项目记忆相关功能降级为不可用状态，避免拖垮整个应用。
+    MEMORY_AVAILABLE = False
 from pipeline_service import run_upload_to_cases
 from risk_report_service import generate_risk_assessment_report
 
@@ -95,12 +106,17 @@ MODULE_CHAT = "chat"
 MODULE_RISK_REPORT = "risk_report"
 MODULE_SETTINGS = "settings"
 
-SUMMARY_PROMPT = "请用 200 字以内总结以下文档的核心要点与测试相关风险。"
+SUMMARY_PROMPT = (
+    "你是一位资深需求与测试架构师。这是一份新上传或导入的测试或需求文档。"
+    "请用 150 字以内的中文，总结该文档主要涵盖的业务模块、核心操作流程以及增删改的重点逻辑。"
+    "不要输出多余解释，直接给出总结。"
+)
 
 
 def _generate_entry_summary(entry_id: int, content: str, gemini_key: str = "") -> tuple[bool, str]:
     """调用 Gemini 生成条目摘要。返回 (是否成功, 失败时的错误信息)。"""
     if not (content or "").strip():
+        update_agent_summary(entry_id, "", "failed")
         return False, "内容为空"
     text = (content or "").strip()[:8000]
     key = (gemini_key or "").strip() or os.environ.get("GEMINI_API_KEY", "")
@@ -109,7 +125,8 @@ def _generate_entry_summary(entry_id: int, content: str, gemini_key: str = "") -
         return False, "未配置 Gemini API Key"
     try:
         from langchain_google_genai import ChatGoogleGenerativeAI
-        model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        raw_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        model = _resolve_gemini_model(raw_model)
         llm = ChatGoogleGenerativeAI(model=model, google_api_key=key, temperature=0.2)
         msg = llm.invoke(f"{SUMMARY_PROMPT}\n\n---\n\n{text}")
         summary = (msg.content or "").strip()
@@ -121,6 +138,60 @@ def _generate_entry_summary(entry_id: int, content: str, gemini_key: str = "") -
         return False, str(ex)
     update_agent_summary(entry_id, "", "failed")
     return False, "生成为空"
+
+
+def _parse_design_image_with_gemini(
+    image_bytes: bytes,
+    mime_type: str,
+    gemini_key: str = "",
+) -> tuple[str, str]:
+    """
+    调用 Gemini Vision 解析设计图，返回结构化文本描述。
+    返回 (description_text, error_message)。error_message 为空字符串表示成功。
+    """
+    key = (gemini_key or "").strip() or os.environ.get("GEMINI_API_KEY", "")
+    if not key:
+        return "", "未配置 Gemini API Key"
+    if not image_bytes:
+        return "", "图片内容为空"
+
+    design_vision_prompt = (
+        "你是一位资深 UI/UX 测试工程师。请分析这张界面设计图，输出结构化描述，"
+        "供自动化测试用例生成系统参考。\n\n"
+        "输出格式：\n"
+        "## 页面 / 模块名称\n（根据图中标题或推断得出）\n\n"
+        "## 页面层级与布局\n（顶栏、底栏、侧栏、主内容区大体布局）\n\n"
+        "## 关键 UI 组件\n（按钮、输入框、列表项、弹窗等，说明标签文案和状态）\n\n"
+        "## 可见的交互入口\n（Tab 切换、下拉菜单、长按操作等）\n\n"
+        "## 状态与条件展示\n（空态、加载态、错误态、权限不足态等，如图中有体现）\n\n"
+        "## 关键文案\n（图中重要的 UI 文案、错误提示、占位符文字等）\n\n"
+        "只输出上述结构，不加多余说明。"
+    )
+
+    try:
+        import base64
+        from langchain_core.messages import HumanMessage
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        raw_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        model = _resolve_gemini_model(raw_model)
+        llm = ChatGoogleGenerativeAI(model=model, google_api_key=key, temperature=0.1)
+
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        message = HumanMessage(
+            content=[
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}},
+                {"type": "text", "text": design_vision_prompt},
+            ]
+        )
+        resp = llm.invoke([message])
+        text = (getattr(resp, "content", None) or str(resp) or "").strip()
+        if not text:
+            return "", "Gemini 返回内容为空，请确认图片清晰度"
+        return text, ""
+    except Exception as ex:  # pragma: no cover - 依赖外部服务
+        err = str(ex)
+        return "", f"解析失败：{err}"
 
 
 def _save_last_run(r: dict) -> None:
@@ -961,9 +1032,10 @@ def _render_module_risk_report(T: dict, defaults: dict):
     st.subheader(_get_text(T, "risk_report.section_title") or "需求风险分析")
     st.caption(_get_text(T, "risk_report.section_desc") or "单独对文档做风险评估，产出表格报告，不参与四 Agent 流程。")
 
+    source_options = ["paste", "memory"] if MEMORY_AVAILABLE else ["paste"]
     doc_source = st.radio(
         _get_text(T, "risk_report.doc_source") or "文档来源",
-        options=["paste", "memory"],
+        options=source_options,
         format_func=lambda x: {
             "paste": _get_text(T, "risk_report.doc_source_paste") or "粘贴内容",
             "memory": _get_text(T, "risk_report.doc_source_memory") or "项目记忆（选择近期文档）",
@@ -1152,6 +1224,10 @@ def _render_module_memory(T: dict, defaults: dict):
     st.subheader(_get_text(T, "memory_tab.section_title") or "项目记忆")
     st.caption(_get_text(T, "memory_tab.caption_browse") or "导入的需求文档供 Agent 参考；先搜索查看已有内容，再按需导入。")
 
+    if not MEMORY_AVAILABLE:
+        st.info("当前运行环境未启用项目记忆存储（例如 sqlite3 不可用），项目记忆功能暂不可用，但生成用例功能不受影响。")
+        return
+
     # Agent 知识库区块
     try:
         from agent_knowledge_service import (
@@ -1236,6 +1312,34 @@ def _render_module_memory(T: dict, defaults: dict):
     st.markdown("**" + (_get_text(T, "memory_tab.history_timeline_title") or (_get_text(T, "memory_tab.import_history_section") or "导入历史")) + "**")
     hist = list_import_history(limit=20)
     if hist:
+        pending_entries = [
+            e for e in hist if (e.get("agent_summary_status") or "pending") in ("pending", "failed")
+        ]
+        if pending_entries:
+            if st.button(
+                f"批量生成缺失摘要（{len(pending_entries)} 条）",
+                key="batch_gen_summary",
+                type="secondary",
+            ):
+                gemini_key = defaults.get("gemini_key", "")
+                success_count = 0
+                fail_count = 0
+                prog = st.progress(0.0, text="批量生成摘要中…")
+                for idx, e in enumerate(pending_entries):
+                    _content = (e.get("content", "") or e.get("summary", "") or "").strip()
+                    ok, _ = _generate_entry_summary(e["id"], _content, gemini_key)
+                    if ok:
+                        success_count += 1
+                    else:
+                        fail_count += 1
+                    prog.progress(
+                        (idx + 1) / len(pending_entries),
+                        text=f"进度 {idx+1}/{len(pending_entries)}（成功 {success_count}，失败 {fail_count}）",
+                    )
+                prog.empty()
+                st.success(f"批量生成完成：成功 {success_count} 条，失败 {fail_count} 条")
+                st.rerun()
+
         for e in hist:
             status = e.get("agent_summary_status") or "pending"
             if status == "success":
@@ -1243,7 +1347,7 @@ def _render_module_memory(T: dict, defaults: dict):
             elif status == "failed":
                 tag = "失败 ✗"
             else:
-                tag = _get_text(T, "memory_tab.agent_summary_pending") or "生成中…"
+                tag = _get_text(T, "memory_tab.agent_summary_pending_tag") or "待生成"
             label = f"【{e.get('title', '') or e.get('source_id', '') or e.get('source_type', '')}】 {e.get('created_at', '')} · [{tag}]"
             with st.expander(label, expanded=False):
                 content = e.get("content", "") or e.get("summary", "")
@@ -1259,7 +1363,16 @@ def _render_module_memory(T: dict, defaults: dict):
                         else:
                             st.error(f"摘要生成失败：{err}")
                 else:
-                    st.caption(_get_text(T, "memory_tab.agent_summary_pending") or "生成中…")
+                    st.caption(_get_text(T, "memory_tab.agent_summary_pending_hint") or "摘要待生成")
+                    if st.button(
+                        _get_text(T, "memory_tab.agent_summary_generate_btn") or "生成摘要",
+                        key=f"gen_summary_{e.get('id')}",
+                    ):
+                        ok, err = _generate_entry_summary(e["id"], content, defaults.get("gemini_key", ""))
+                        if ok:
+                            st.rerun()
+                        else:
+                            st.error(f"摘要生成失败：{err}")
                 st.divider()
                 st.caption("导入内容")
                 st.markdown((content or "")[:2000] + ("..." if len(content or "") > 2000 else ""))
@@ -1392,6 +1505,161 @@ def _render_module_memory(T: dict, defaults: dict):
         else:
             st.error(_get_text(T, "memory_tab.import_required") or "请上传文件或粘贴内容")
 
+    # === 导入设计图 ===
+    st.markdown("**" + (_get_text(T, "memory_tab.design_mockup_section") or "导入设计图") + "**")
+    st.caption(
+        _get_text(T, "memory_tab.design_mockup_caption")
+        or "上传 Figma/截图等设计稿，Agent 将理解界面布局与交互细节。"
+    )
+
+    try:
+        from app_ui_components import render_file_uploader
+
+        design_upload_result = render_file_uploader(
+            accepted_types=["png", "jpg", "jpeg", "pdf"],
+            key="design_mockup_upload",
+            label=_get_text(T, "memory_tab.design_mockup_upload_label")
+            or "上传设计图（PNG / JPG / PDF，最多 5 个，单文件 ≤10MB）",
+        )
+        design_files = design_upload_result.get("files") if design_upload_result else None
+    except ImportError:
+        design_files = st.file_uploader(
+            _get_text(T, "memory_tab.design_mockup_upload_label")
+            or "上传设计图（PNG / JPG / PDF，最多 5 个，单文件 ≤10MB）",
+            type=["png", "jpg", "jpeg", "pdf"],
+            key="design_mockup_upload",
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+        )
+
+    if st.button(
+        _get_text(T, "memory_tab.design_mockup_import_btn") or "解析并导入",
+        key="mem_import_design",
+    ):
+        gemini_key = defaults.get("gemini_key", "")
+        if not gemini_key:
+            st.error(_get_text(T, "memory_tab.design_mockup_key_missing") or "请先在设置中配置 Gemini API Key")
+        elif not design_files:
+            st.error(_get_text(T, "memory_tab.import_required") or "请上传设计图文件")
+        else:
+            files_to_process = list(design_files)[:5]
+            if len(files_to_process) < len(list(design_files)):
+                st.warning("已超过 5 个文件限制，只处理前 5 个。")
+
+            import_count = 0
+            skip_count = 0
+            fail_msgs: list[str] = []
+
+            import hashlib
+            import time
+
+            for uploaded_file in files_to_process:
+                file_name = getattr(uploaded_file, "name", "设计图")
+                raw_bytes = uploaded_file.read()
+
+                # 文件大小检查（10MB）
+                if len(raw_bytes) > 10 * 1024 * 1024:
+                    fail_msgs.append(f"{file_name}：文件超过 10MB，已跳过")
+                    continue
+
+                file_hash = hashlib.sha256(raw_bytes).hexdigest()
+
+                ext = file_name.lower().rsplit(".", 1)[-1] if "." in file_name else "png"
+                mime_map = {
+                    "jpg": "image/jpeg",
+                    "jpeg": "image/jpeg",
+                    "png": "image/png",
+                    "pdf": "application/pdf",
+                }
+                mime_type = mime_map.get(ext, "image/png")
+
+                pages_bytes: list[tuple[bytes, str]] = []
+                if ext == "pdf":
+                    try:
+                        from io import BytesIO
+
+                        import fitz  # type: ignore[import]  # PyMuPDF 可选
+
+                        doc = fitz.open(stream=raw_bytes, filetype="pdf")
+                        total_pages = len(doc)
+                        max_pages = 5
+                        if total_pages > max_pages:
+                            st.info(
+                                (_get_text(T, "memory_tab.design_mockup_pdf_truncated") or "PDF 超过 5 页，已只处理前 5 页")
+                                + f"（共 {total_pages} 页）"
+                            )
+                        for i in range(min(total_pages, max_pages)):
+                            page = doc[i]
+                            pix = page.get_pixmap(dpi=150)
+                            img_bytes = pix.tobytes("png")
+                            pages_bytes.append((img_bytes, "image/png"))
+                        doc.close()
+                    except ImportError:
+                        # 无 PyMuPDF 时，直接把 PDF 字节发给 Gemini
+                        pages_bytes = [(raw_bytes, "application/pdf")]
+                    except Exception as ex:
+                        fail_msgs.append(f"{file_name}：PDF 解析失败 - {ex}")
+                        continue
+                else:
+                    pages_bytes = [(raw_bytes, mime_type)]
+
+                page_descriptions: list[str] = []
+                for idx, (pb, pm) in enumerate(pages_bytes):
+                    with st.spinner(
+                        (_get_text(T, "memory_tab.design_mockup_parsing") or "正在用 Gemini Vision 解析设计图…")
+                        + (f"（第 {idx + 1} 页）" if len(pages_bytes) > 1 else "")
+                    ):
+                        desc, err = _parse_design_image_with_gemini(pb, pm, gemini_key)
+                    if err:
+                        fail_msgs.append(f"{file_name} 第{idx+1}页：{err}")
+                    else:
+                        if len(pages_bytes) > 1:
+                            page_descriptions.append(f"### 第 {idx+1} 页\n\n{desc}")
+                        else:
+                            page_descriptions.append(desc)
+                    if idx < len(pages_bytes) - 1:
+                        time.sleep(1)
+
+                if not page_descriptions:
+                    continue
+
+                full_description = f"# 设计图：{file_name}\n\n" + "\n\n---\n\n".join(page_descriptions)
+                rowid, status = add_entry_with_dedup(
+                    DESIGN_MOCKUP_SOURCE_TYPE,
+                    full_description,
+                    source_id=file_hash[:16],
+                    title=f"设计图：{file_name}",
+                    summary=full_description[:500],
+                )
+
+                if status == "skipped":
+                    skip_count += 1
+                else:
+                    import_count += 1
+                    try:
+                        from context_cache_service import mark_context_cache_dirty
+
+                        mark_context_cache_dirty(f"design_{status}")
+                    except ImportError:
+                        pass
+                    with st.spinner(_get_text(T, "memory_tab.agent_summary_pending") or "生成摘要中…"):
+                        _generate_entry_summary(rowid, full_description, gemini_key)
+
+            if import_count:
+                st.success(
+                    (_get_text(T, "memory_tab.design_mockup_success") or "设计图已解析导入，下次生成用例时 Agent 将参考。")
+                    + f"（{import_count} 个）"
+                )
+            if skip_count:
+                st.info(
+                    (_get_text(T, "memory_tab.design_mockup_skipped") or "设计图未变更，已跳过")
+                    + f"（{skip_count} 个）"
+                )
+            for msg in fail_msgs:
+                st.error(msg)
+            if import_count or skip_count:
+                st.rerun()
+
     st.divider()
     with st.expander(_get_text(T, "memory_tab.memory_summary_section") or "项目记忆摘要（高级）", expanded=False):
         mem = load_project_memory()
@@ -1429,9 +1697,10 @@ def _render_module_chat(T: dict, defaults: dict):
     st.subheader(_get_text(T, "chat_tab.section_title") or "与产品文档管理 Agent 沟通")
     st.caption(_get_text(T, "chat_tab.section_desc") or "Agent 可理解全部需求文档。选择项目整体记忆或手动粘贴文档内容。")
 
+    chat_options = ["memory", "paste"] if MEMORY_AVAILABLE else ["paste"]
     doc_source = st.radio(
         _get_text(T, "chat_tab.doc_source_label") or "文档来源",
-        options=["memory", "paste"],
+        options=chat_options,
         format_func=lambda x: {
             "memory": _get_text(T, "chat_tab.doc_source_memory") or "项目整体记忆（全部需求文档）",
             "paste": _get_text(T, "chat_tab.doc_source_paste") or "手动粘贴文档内容",
@@ -1440,10 +1709,18 @@ def _render_module_chat(T: dict, defaults: dict):
     )
     doc_context = ""
     if doc_source == "memory":
-        from memory_store import get_all_demands_full_for_chat
-        doc_context = get_all_demands_full_for_chat(limit=30).strip()
-        if not doc_context:
-            st.info(_get_text(T, "chat_tab.doc_source_empty") or "项目记忆暂无需求文档。请先在「项目记忆」页导入。")
+        if not MEMORY_AVAILABLE:
+            st.info(_get_text(T, "chat_tab.doc_source_empty") or "当前运行环境未启用项目记忆存储，请使用「粘贴文档内容」模式。")
+        else:
+            try:
+                from memory_store import get_all_demands_full_for_chat
+            except ImportError:
+                st.info(_get_text(T, "chat_tab.doc_source_empty") or "当前运行环境未启用项目记忆存储，请使用「粘贴文档内容」模式。")
+                doc_context = ""
+            else:
+                doc_context = get_all_demands_full_for_chat(limit=30).strip()
+                if not doc_context:
+                    st.info(_get_text(T, "chat_tab.doc_source_empty") or "项目记忆暂无需求文档。请先在「项目记忆」页导入。")
     else:
         doc_context = st.text_area(
             _get_text(T, "chat_tab.paste_placeholder") or "在此粘贴需求文档内容",

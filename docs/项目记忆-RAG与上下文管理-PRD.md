@@ -147,3 +147,26 @@
 - **安全**：哈希计算与存储不涉及敏感信息；Gemini API Key 通过 st.secrets 或 .env 读取。
 - **性能**：Metadata 层查询需在 100ms 内完成；Context Cache 创建可异步，不阻塞用户操作。
 - **兼容**：与现有「粘贴导入」「Excel/CSV 导入」流程兼容，新逻辑作为增强而非破坏性变更。
+
+### 6.1 环境兼容（P0 铁律）
+
+> **事故教训**：上一版硬依赖 `sqlite3`，Streamlit Cloud 缺失该模块导致整站白屏。
+
+| 约束 | 说明 |
+|------|------|
+| **项目记忆是可选增强** | 任何情况下，项目记忆不可用 ≠ 生成用例不可用 |
+| **存储后端可插拔** | sqlite3 首选，缺失时自动降级到 JSON 文件后端，对外接口不变 |
+| **惰性初始化** | 模块顶层只做 class 定义和常量，DB 连接/文件读取推迟到首次读写 |
+| **memory_store 自身不抛 ImportError** | 后端选择在模块内部完成，sqlite3 缺失由模块自行消化 |
+| **调用方多层防御** | 每个 `from memory_store import ...` 都有 try-except 兜底 |
+
+### 6.2 降级策略
+
+| 层级 | 条件 | 行为 |
+|------|------|------|
+| 正常 | sqlite3 可用 | SqliteBackend，全功能 |
+| 降级 1 | sqlite3 不可用 | JsonFileBackend，基础 CRUD + 搜索（遍历匹配）+ 去重，用户无感知 |
+| 降级 2 | memory_store 自身异常 | `MEMORY_AVAILABLE = False`，项目记忆 Tab 显示"暂不可用"，核心功能不受影响 |
+| 降级 3 | Agent 上下文层 | `get_project_context_for_agent()` 中 memory_store 调用失败 → 仅用 project_memory.md + fambase_modules.yaml |
+
+详见 `docs/项目记忆-重新规划实施方案.md`。

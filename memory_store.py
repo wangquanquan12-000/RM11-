@@ -3,126 +3,39 @@
 项目记忆存储：干净的需求文档历史，供 Agent 与用户查阅
 - 需求文档: manual（粘贴导入）
 - 运行产出: run_summary（可选供 Agent）
+
+设计目标（见《项目记忆-重新规划实施方案》）：
+- 存储后端可插拔：sqlite3 首选，缺失时自动降级到 JSON 文件后端；
+- 惰性初始化：模块 import 时不做 IO，首次读写时才建立连接/读取文件；
+- memory_store 自身不抛 ImportError，对外接口始终可用。
 """
-import sqlite3
+from __future__ import annotations
+
+import json
 import os
 import hashlib
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 MEMORY_DB_PATH = os.path.join(CONFIG_DIR, "memory.db")
+JSON_PATH = os.path.join(CONFIG_DIR, "memory_entries.json")
 
 # 视为「需求文档」的 source_type，供 Agent 使用
-DEMAND_SOURCE_TYPES = ("manual",)
+DEMAND_SOURCE_TYPES = ("manual", "design_mockup")
 # 测试用例：导入后供 Agent 理解项目既有用例
 TEST_CASES_SOURCE_TYPE = "test_cases"
+# 设计图（Gemini Vision 解析后的文本描述）
+DESIGN_MOCKUP_SOURCE_TYPE = "design_mockup"
 
+_SQLITE_AVAILABLE = False
+try:
+    import sqlite3  # type: ignore
 
-def _get_conn():
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    conn = sqlite3.connect(MEMORY_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _ensure_tables(conn):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS memory_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            source_id TEXT,
-            title TEXT,
-            content TEXT NOT NULL,
-            summary TEXT
-        )
-    """)
-    for col in ("agent_summary", "agent_summary_status"):
-        try:
-            conn.execute(f"ALTER TABLE memory_entries ADD COLUMN {col} TEXT")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # 列已存在
-    try:
-        conn.execute("ALTER TABLE memory_entries ADD COLUMN content_hash TEXT")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS memory_index (
-            content_hash TEXT PRIMARY KEY,
-            entry_id INTEGER NOT NULL,
-            file_name TEXT,
-            created_at TEXT
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_memory_created ON memory_entries(created_at DESC)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_memory_source ON memory_entries(source_type)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_memory_content_hash ON memory_entries(content_hash)"
-    )
-
-
-def add_entry(
-    source_type: str,
-    content: str,
-    source_id: str = "",
-    title: str = "",
-    summary: str = "",
-) -> int:
-    """添加或更新记忆。相同 source_type+source_id 时更新，避免重复。
-    source_type: manual | run_summary"""
-    conn = _get_conn()
-    _ensure_tables(conn)
-    now = datetime.now().isoformat()
-    sid = (source_id or "").strip()
-    content_hash = _compute_content_hash(content)
-    # 有 source_id 时尝试 upsert（唯一索引可能不存在于旧库，先尝试）
-    if sid:
-        existing = conn.execute(
-            "SELECT id FROM memory_entries WHERE source_type = ? AND source_id = ?",
-            (source_type, sid),
-        ).fetchone()
-        if existing:
-            conn.execute(
-                """UPDATE memory_entries SET created_at=?, title=?, content=?, summary=?,
-                   content_hash=?, agent_summary='', agent_summary_status='pending'
-                   WHERE source_type=? AND source_id=?""",
-                (now, title or "", content, summary or "", content_hash, source_type, sid),
-            )
-            conn.execute(
-                """INSERT INTO memory_index (content_hash, entry_id, file_name, created_at)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(content_hash) DO UPDATE SET
-                     entry_id=excluded.entry_id, file_name=excluded.file_name, created_at=excluded.created_at""",
-                (content_hash, int(existing["id"]), title or "", now),
-            )
-            conn.commit()
-            rowid = existing["id"]
-            conn.close()
-            return rowid
-    cur = conn.execute(
-        "INSERT INTO memory_entries (created_at, source_type, source_id, title, content, summary, content_hash) VALUES (?,?,?,?,?,?,?)",
-        (now, source_type, sid, title or "", content, summary or "", content_hash),
-    )
-    conn.commit()
-    rowid = cur.lastrowid
-    if rowid:
-        conn.execute(
-            """INSERT OR REPLACE INTO memory_index (content_hash, entry_id, file_name, created_at)
-               VALUES (?, ?, ?, ?)""",
-            (content_hash, int(rowid), title or "", now),
-        )
-        conn.commit()
-    conn.close()
-    return rowid or 0
+    _SQLITE_AVAILABLE = True
+except Exception:  # pragma: no cover - 仅在缺 sqlite3 时触发
+    sqlite3 = None  # type: ignore[assignment]
+    _SQLITE_AVAILABLE = False
 
 
 def _compute_content_hash(content: str) -> str:
@@ -130,206 +43,387 @@ def _compute_content_hash(content: str) -> str:
     return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
 
 
-def add_entry_with_dedup(
-    source_type: str,
-    content: str,
-    source_id: str = "",
-    title: str = "",
-    summary: str = "",
-) -> tuple[int, str]:
-    """带哈希去重的添加/更新。
-    返回 (rowid, status): added | updated | skipped
-    """
-    clean_content = (content or "").strip()
-    if not clean_content:
-        return 0, "skipped"
+def _now_iso() -> str:
+    return datetime.now().isoformat()
 
-    conn = _get_conn()
-    _ensure_tables(conn)
-    now = datetime.now().isoformat()
-    sid = (source_id or "").strip()
-    content_hash = _compute_content_hash(clean_content)
 
-    # 先按哈希去重：命中则直接跳过
-    existing_by_hash = conn.execute(
-        "SELECT id FROM memory_entries WHERE content_hash = ? LIMIT 1",
-        (content_hash,),
-    ).fetchone()
-    if existing_by_hash:
-        conn.close()
-        return int(existing_by_hash["id"]), "skipped"
+@runtime_checkable
+class _MemoryBackend(Protocol):
+    def add_entry(
+        self,
+        source_type: str,
+        content: str,
+        source_id: str = "",
+        title: str = "",
+        summary: str = "",
+    ) -> int: ...
 
-    # 再按 source_type + source_id 更新
-    if sid:
-        existing = conn.execute(
-            "SELECT id FROM memory_entries WHERE source_type = ? AND source_id = ?",
-            (source_type, sid),
-        ).fetchone()
-        if existing:
-            rowid = int(existing["id"])
-            conn.execute(
-                """UPDATE memory_entries
-                   SET created_at=?, title=?, content=?, summary=?, content_hash=?,
-                       agent_summary='', agent_summary_status='pending'
-                   WHERE id=?""",
-                (now, title or "", clean_content, summary or "", content_hash, rowid),
+    def add_entry_with_dedup(
+        self,
+        source_type: str,
+        content: str,
+        source_id: str = "",
+        title: str = "",
+        summary: str = "",
+    ) -> tuple[int, str]: ...
+
+    def search(self, keyword: str, limit: int = 50) -> list[dict[str, Any]]: ...
+
+    def delete_entry(self, entry_id: int) -> bool: ...
+
+    def list_recent(self, limit: int = 50) -> list[dict[str, Any]]: ...
+
+    def update_agent_summary(self, entry_id: int, summary: str, status: str) -> bool: ...
+
+    def list_import_history(self, limit: int = 20) -> list[dict[str, Any]]: ...
+
+    def get_recent_for_agent(
+        self,
+        limit: int = 10,
+        max_content_len: int = 3000,
+        demand_only: bool = True,
+        include_test_cases: bool = False,
+    ) -> str: ...
+
+    def get_all_demands_full_for_chat(
+        self,
+        limit: int = 30,
+        max_total_chars: int = 80000,
+        include_test_cases: bool = True,
+    ) -> str: ...
+
+    def get_entry_content(self, source_type: str, source_id: str) -> str | None: ...
+
+    def list_for_browse(
+        self,
+        source_type_filter: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]: ...
+
+
+class SqliteBackend:
+    """sqlite3 可用时的后端实现。"""
+
+    def __init__(self) -> None:
+        self._conn: Any | None = None
+        self._tables_ready = False
+
+    def _get_conn(self):
+        if self._conn is None:
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            self._conn = sqlite3.connect(MEMORY_DB_PATH)  # type: ignore[call-arg]
+            self._conn.row_factory = sqlite3.Row  # type: ignore[attr-defined]
+        if not self._tables_ready:
+            self._ensure_tables(self._conn)
+            self._tables_ready = True
+        return self._conn
+
+    def _ensure_tables(self, conn) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id TEXT,
+                title TEXT,
+                content TEXT NOT NULL,
+                summary TEXT
             )
+        """
+        )
+        for col in ("agent_summary", "agent_summary_status"):
+            try:
+                conn.execute(f"ALTER TABLE memory_entries ADD COLUMN {col} TEXT")
+                conn.commit()
+            except Exception:
+                pass
+        try:
+            conn.execute("ALTER TABLE memory_entries ADD COLUMN content_hash TEXT")
+            conn.commit()
+        except Exception:
+            pass
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_index (
+                content_hash TEXT PRIMARY KEY,
+                entry_id INTEGER NOT NULL,
+                file_name TEXT,
+                created_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_created ON memory_entries(created_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_source ON memory_entries(source_type)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_content_hash ON memory_entries(content_hash)"
+        )
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> dict[str, Any]:
+        d = dict(row)
+        d.setdefault("agent_summary", "")
+        d.setdefault("agent_summary_status", "pending")
+        d.setdefault("content_hash", "")
+        return d
+
+    # 公共接口实现 ---------------------------------------------------------
+
+    def add_entry(
+        self,
+        source_type: str,
+        content: str,
+        source_id: str = "",
+        title: str = "",
+        summary: str = "",
+    ) -> int:
+        conn = self._get_conn()
+        now = _now_iso()
+        sid = (source_id or "").strip()
+        content_hash = _compute_content_hash(content)
+        if sid:
+            existing = conn.execute(
+                "SELECT id FROM memory_entries WHERE source_type = ? AND source_id = ?",
+                (source_type, sid),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE memory_entries SET created_at=?, title=?, content=?, summary=?,
+                       content_hash=?, agent_summary='', agent_summary_status='pending'
+                       WHERE source_type=? AND source_id=?""",
+                    (now, title or "", content, summary or "", content_hash, source_type, sid),
+                )
+                conn.execute(
+                    """INSERT INTO memory_index (content_hash, entry_id, file_name, created_at)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(content_hash) DO UPDATE SET
+                         entry_id=excluded.entry_id, file_name=excluded.file_name, created_at=excluded.created_at""",
+                    (content_hash, int(existing["id"]), title or "", now),
+                )
+                conn.commit()
+                return int(existing["id"])
+        cur = conn.execute(
+            """INSERT INTO memory_entries
+               (created_at, source_type, source_id, title, content, summary, content_hash)
+               VALUES (?,?,?,?,?,?,?)""",
+            (now, source_type, sid, title or "", content, summary or "", content_hash),
+        )
+        conn.commit()
+        rowid = int(cur.lastrowid or 0)
+        if rowid:
             conn.execute(
-                """INSERT INTO memory_index (content_hash, entry_id, file_name, created_at)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(content_hash) DO UPDATE SET
-                     entry_id=excluded.entry_id, file_name=excluded.file_name, created_at=excluded.created_at""",
+                """INSERT OR REPLACE INTO memory_index (content_hash, entry_id, file_name, created_at)
+                   VALUES (?, ?, ?, ?)""",
                 (content_hash, rowid, title or "", now),
             )
             conn.commit()
-            conn.close()
-            return rowid, "updated"
+        return rowid
 
-    cur = conn.execute(
-        """INSERT INTO memory_entries
-           (created_at, source_type, source_id, title, content, summary, content_hash)
-           VALUES (?,?,?,?,?,?,?)""",
-        (now, source_type, sid, title or "", clean_content, summary or "", content_hash),
-    )
-    rowid = int(cur.lastrowid or 0)
-    conn.execute(
-        """INSERT OR REPLACE INTO memory_index (content_hash, entry_id, file_name, created_at)
-           VALUES (?, ?, ?, ?)""",
-        (content_hash, rowid, title or "", now),
-    )
-    conn.commit()
-    conn.close()
-    return rowid, "added"
+    def add_entry_with_dedup(
+        self,
+        source_type: str,
+        content: str,
+        source_id: str = "",
+        title: str = "",
+        summary: str = "",
+    ) -> tuple[int, str]:
+        clean_content = (content or "").strip()
+        if not clean_content:
+            return 0, "skipped"
+        conn = self._get_conn()
+        now = _now_iso()
+        sid = (source_id or "").strip()
+        content_hash = _compute_content_hash(clean_content)
+        existing_by_hash = conn.execute(
+            "SELECT id FROM memory_entries WHERE content_hash = ? LIMIT 1",
+            (content_hash,),
+        ).fetchone()
+        if existing_by_hash:
+            return int(existing_by_hash["id"]), "skipped"
+        if sid:
+            existing = conn.execute(
+                "SELECT id FROM memory_entries WHERE source_type = ? AND source_id = ?",
+                (source_type, sid),
+            ).fetchone()
+            if existing:
+                rowid = int(existing["id"])
+                conn.execute(
+                    """UPDATE memory_entries
+                       SET created_at=?, title=?, content=?, summary=?, content_hash=?,
+                           agent_summary='', agent_summary_status='pending'
+                       WHERE id=?""",
+                    (now, title or "", clean_content, summary or "", content_hash, rowid),
+                )
+                conn.execute(
+                    """INSERT INTO memory_index (content_hash, entry_id, file_name, created_at)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(content_hash) DO UPDATE SET
+                         entry_id=excluded.entry_id, file_name=excluded.file_name, created_at=excluded.created_at""",
+                    (content_hash, rowid, title or "", now),
+                )
+                conn.commit()
+                return rowid, "updated"
+        cur = conn.execute(
+            """INSERT INTO memory_entries
+               (created_at, source_type, source_id, title, content, summary, content_hash)
+               VALUES (?,?,?,?,?,?,?)""",
+            (now, source_type, sid, title or "", clean_content, summary or "", content_hash),
+        )
+        rowid = int(cur.lastrowid or 0)
+        if rowid:
+            conn.execute(
+                """INSERT OR REPLACE INTO memory_index (content_hash, entry_id, file_name, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (content_hash, rowid, title or "", now),
+            )
+            conn.commit()
+        return rowid, "added"
 
-
-def search(keyword: str, limit: int = 50) -> list[dict[str, Any]]:
-    """按关键词搜索，按相关性排序（匹配词越多越靠前），其次按时间倒序。"""
-    if not keyword or not keyword.strip():
-        return list_recent(limit=limit)
-    conn = _get_conn()
-    _ensure_tables(conn)
-    kw = keyword.strip()
-    # 多词：按空白切分，每个词都要匹配（AND），按匹配词数排序
-    terms = [t.strip() for t in kw.split() if t.strip()]
-    if not terms:
-        return list_recent(limit=limit)
-    where_clause = " AND ".join(
-        [f"(content LIKE ? OR summary LIKE ? OR title LIKE ?)" for _ in terms]
-    )
-    args_where = []
-    for t in terms:
-        p = f"%{t}%"
-        args_where.extend([p, p, p])
-    # 先取更多候选，再在 Python 中按相关性打分排序
-    rows = conn.execute(
-        f"""SELECT id, created_at, source_type, source_id, title, content, summary
-            FROM memory_entries
-            WHERE {where_clause}
-            ORDER BY created_at DESC
-            LIMIT ?""",
-        (*args_where, limit * 3),
-    ).fetchall()
-    conn.close()
-    entries = [_row_to_dict(r) for r in rows]
-    if not entries:
-        return []
-    # 相关性：匹配到的词数越多、越靠前
-    def score(e):
-        text = f"{e.get('title','')} {e.get('summary','')} {e.get('content','')}"
-        return sum(1 for t in terms if t in text)
-    entries.sort(key=lambda e: (score(e), e.get("created_at", "")), reverse=True)
-    return entries[:limit]
-
-
-def delete_entry(entry_id: int) -> bool:
-    """删除指定 id 的记忆条目。返回是否成功。"""
-    conn = _get_conn()
-    _ensure_tables(conn)
-    cur = conn.execute("DELETE FROM memory_entries WHERE id = ?", (entry_id,))
-    conn.commit()
-    ok = cur.rowcount > 0
-    conn.close()
-    return ok
-
-
-def list_recent(limit: int = 50) -> list[dict[str, Any]]:
-    """按时间倒序列出最近记录"""
-    conn = _get_conn()
-    _ensure_tables(conn)
-    rows = conn.execute(
-        """SELECT id, created_at, source_type, source_id, title, content, summary
-           FROM memory_entries
-           ORDER BY created_at DESC
-           LIMIT ?""",
-        (limit,),
-    ).fetchall()
-    conn.close()
-    return [_row_to_dict(r) for r in rows]
-
-
-def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    d = dict(row)
-    d.setdefault("agent_summary", "")
-    d.setdefault("agent_summary_status", "pending")
-    d.setdefault("content_hash", "")
-    return d
-
-
-def update_agent_summary(entry_id: int, summary: str, status: str) -> bool:
-    """更新条目的 Agent 摘要。status: 'success' | 'failed'"""
-    conn = _get_conn()
-    _ensure_tables(conn)
-    cur = conn.execute(
-        "UPDATE memory_entries SET agent_summary=?, agent_summary_status=? WHERE id=?",
-        (summary or "", status, entry_id),
-    )
-    conn.commit()
-    ok = cur.rowcount > 0
-    conn.close()
-    return ok
-
-
-def list_import_history(limit: int = 20) -> list[dict[str, Any]]:
-    """导入历史：按时间倒序，含 agent_summary、agent_summary_status。"""
-    conn = _get_conn()
-    _ensure_tables(conn)
-    try:
+    def search(self, keyword: str, limit: int = 50) -> list[dict[str, Any]]:
+        if not keyword or not keyword.strip():
+            return self.list_recent(limit=limit)
+        conn = self._get_conn()
+        kw = keyword.strip()
+        terms = [t.strip() for t in kw.split() if t.strip()]
+        if not terms:
+            return self.list_recent(limit=limit)
+        where_clause = " AND ".join(
+            [f"(content LIKE ? OR summary LIKE ? OR title LIKE ?)" for _ in terms]
+        )
+        args_where: list[str] = []
+        for t in terms:
+            p = f"%{t}%"
+            args_where.extend([p, p, p])
         rows = conn.execute(
-            """SELECT id, created_at, source_type, source_id, title, content, summary,
-                      COALESCE(agent_summary,'') as agent_summary,
-                      COALESCE(agent_summary_status,'pending') as agent_summary_status
-               FROM memory_entries
-               ORDER BY created_at DESC LIMIT ?""",
-            (limit,),
+            f"""SELECT id, created_at, source_type, source_id, title, content, summary
+                FROM memory_entries
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ?""",
+            (*args_where, limit * 3),
         ).fetchall()
-    except sqlite3.OperationalError:
+        entries = [self._row_to_dict(r) for r in rows]
+        if not entries:
+            return []
+
+        def score(e: dict[str, Any]) -> int:
+            text = f"{e.get('title','')} {e.get('summary','')} {e.get('content','')}"
+            return sum(1 for t in terms if t in text)
+
+        entries.sort(key=lambda e: (score(e), e.get("created_at", "")), reverse=True)
+        return entries[:limit]
+
+    def delete_entry(self, entry_id: int) -> bool:
+        conn = self._get_conn()
+        conn.execute("DELETE FROM memory_index WHERE entry_id = ?", (entry_id,))
+        cur = conn.execute("DELETE FROM memory_entries WHERE id = ?", (entry_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+    def list_recent(self, limit: int = 50) -> list[dict[str, Any]]:
+        conn = self._get_conn()
         rows = conn.execute(
             """SELECT id, created_at, source_type, source_id, title, content, summary
-               FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
+               FROM memory_entries
+               ORDER BY created_at DESC
+               LIMIT ?""",
             (limit,),
         ).fetchall()
-    conn.close()
-    return [_row_to_dict(r) for r in rows]
+        return [self._row_to_dict(r) for r in rows]
 
+    def update_agent_summary(self, entry_id: int, summary: str, status: str) -> bool:
+        conn = self._get_conn()
+        cur = conn.execute(
+            "UPDATE memory_entries SET agent_summary=?, agent_summary_status=? WHERE id=?",
+            (summary or "", status, entry_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
-def get_recent_for_agent(
-    limit: int = 10,
-    max_content_len: int = 3000,
-    demand_only: bool = True,
-    include_test_cases: bool = False,
-) -> str:
-    """获取供 Agent 使用的需求文档上下文。
-    demand_only=True 时只取需求文档（manual）。
-    include_test_cases=True 时额外包含 test_cases 类型的全回归用例。"""
-    conn = _get_conn()
-    _ensure_tables(conn)
-    if demand_only and not include_test_cases:
-        types = DEMAND_SOURCE_TYPES
-    elif include_test_cases:
-        types = (*DEMAND_SOURCE_TYPES, TEST_CASES_SOURCE_TYPE)
-    else:
-        types = None
-    if types:
+    def list_import_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """SELECT id, created_at, source_type, source_id, title, content, summary,
+                          COALESCE(agent_summary,'') as agent_summary,
+                          COALESCE(agent_summary_status,'pending') as agent_summary_status
+                   FROM memory_entries
+                   ORDER BY created_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        except Exception:
+            rows = conn.execute(
+                """SELECT id, created_at, source_type, source_id, title, content, summary
+                   FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def get_recent_for_agent(
+        self,
+        limit: int = 10,
+        max_content_len: int = 3000,
+        demand_only: bool = True,
+        include_test_cases: bool = False,
+    ) -> str:
+        conn = self._get_conn()
+        if demand_only and not include_test_cases:
+            types = DEMAND_SOURCE_TYPES
+        elif include_test_cases:
+            types = (*DEMAND_SOURCE_TYPES, TEST_CASES_SOURCE_TYPE)
+        else:
+            types = None
+        if types:
+            placeholders = ",".join(["?"] * len(types))
+            rows = conn.execute(
+                f"""SELECT id, created_at, source_type, source_id, title, content, summary
+                    FROM memory_entries
+                    WHERE source_type IN ({placeholders})
+                    ORDER BY created_at DESC
+                    LIMIT ?""",
+                (*types, limit * 2),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT id, created_at, source_type, source_id, title, content, summary
+                   FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
+                (limit * 2,),
+            ).fetchall()
+        entries = [self._row_to_dict(r) for r in rows]
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for e in entries:
+            sid = (e.get("source_id") or "").strip()
+            key = f"{e.get('source_type')}:{sid}" if sid else f"_{e.get('id')}"
+            if key not in seen:
+                seen.add(key)
+                unique.append(e)
+            if len(unique) >= limit:
+                break
+        if not unique:
+            return ""
+        parts: list[str] = []
+        per_len = max(200, max_content_len // len(unique))
+        for e in unique:
+            title = (e.get("title") or "").strip() or f"[{e.get('source_type')}]"
+            summary = (e.get("summary") or e.get("content", "")).strip()
+            if len(summary) > per_len:
+                summary = summary[:per_len] + "..."
+            parts.append(f"【{title}】{e.get('created_at', '')}\n{summary}")
+        return "\n\n---\n\n".join(parts)
+
+    def get_all_demands_full_for_chat(
+        self,
+        limit: int = 30,
+        max_total_chars: int = 80000,
+        include_test_cases: bool = True,
+    ) -> str:
+        conn = self._get_conn()
+        types = (*DEMAND_SOURCE_TYPES, TEST_CASES_SOURCE_TYPE) if include_test_cases else DEMAND_SOURCE_TYPES
         placeholders = ",".join(["?"] * len(types))
         rows = conn.execute(
             f"""SELECT id, created_at, source_type, source_id, title, content, summary
@@ -339,112 +433,437 @@ def get_recent_for_agent(
                 LIMIT ?""",
             (*types, limit * 2),
         ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT id, created_at, source_type, source_id, title, content, summary
-               FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
-            (limit * 2,),
-        ).fetchall()
-    conn.close()
-    entries = [_row_to_dict(r) for r in rows]
-    # 按 source_id 去重，保留最新
-    seen: set[str] = set()
-    unique: list[dict] = []
-    for e in entries:
-        sid = (e.get("source_id") or "").strip()
-        key = f"{e.get('source_type')}:{sid}" if sid else f"_{e.get('id')}"
-        if key not in seen:
-            seen.add(key)
-            unique.append(e)
-        if len(unique) >= limit:
-            break
-    if not unique:
-        return ""
-    parts = []
-    per_len = max(200, max_content_len // len(unique))
-    for e in unique:
-        title = (e.get("title") or "").strip() or f"[{e.get('source_type')}]"
-        summary = (e.get("summary") or e.get("content", "")).strip()
-        if len(summary) > per_len:
-            summary = summary[:per_len] + "..."
-        parts.append(f"【{title}】{e.get('created_at', '')}\n{summary}")
-    return "\n\n---\n\n".join(parts)
+        entries = [self._row_to_dict(r) for r in rows]
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for e in entries:
+            sid = (e.get("source_id") or "").strip()
+            key = f"{e.get('source_type')}:{sid}" if sid else f"_{e.get('id')}"
+            if key not in seen:
+                seen.add(key)
+                unique.append(e)
+            if len(unique) >= limit:
+                break
+        if not unique:
+            return ""
+        parts: list[str] = []
+        total = 0
+        for e in unique:
+            title = (e.get("title") or "").strip() or f"[{e.get('source_type')}]"
+            content = (e.get("content") or e.get("summary") or "").strip()
+            block = f"【{title}】{e.get('created_at', '')}\n\n{content}"
+            if total + len(block) > max_total_chars:
+                block = block[: max_total_chars - total - 20] + "\n...(已截断)"
+            parts.append(block)
+            total += len(block)
+            if total >= max_total_chars:
+                break
+        return "\n\n---\n\n".join(parts)
+
+    def get_entry_content(self, source_type: str, source_id: str) -> str | None:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT content FROM memory_entries WHERE source_type = ? AND source_id = ?",
+            (source_type, source_id),
+        ).fetchone()
+        return row["content"] if row else None
+
+    def list_for_browse(
+        self,
+        source_type_filter: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        conn = self._get_conn()
+        if source_type_filter and source_type_filter.strip():
+            rows = conn.execute(
+                """SELECT id, created_at, source_type, source_id, title, content, summary
+                   FROM memory_entries WHERE source_type = ? ORDER BY created_at DESC LIMIT ?""",
+                (source_type_filter.strip(), limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT id, created_at, source_type, source_id, title, content, summary
+                   FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
 
 
-def get_all_demands_full_for_chat(limit: int = 30, max_total_chars: int = 80000, include_test_cases: bool = True) -> str:
-    """获取全部需求文档与测试用例的完整内容，供与 Agent 沟通时使用。
-    include_test_cases=True 时包含已导入的全回归测试用例。"""
-    conn = _get_conn()
-    _ensure_tables(conn)
-    types = (*DEMAND_SOURCE_TYPES, TEST_CASES_SOURCE_TYPE) if include_test_cases else DEMAND_SOURCE_TYPES
-    placeholders = ",".join(["?"] * len(types))
-    rows = conn.execute(
-        f"""SELECT id, created_at, source_type, source_id, title, content, summary
-            FROM memory_entries
-            WHERE source_type IN ({placeholders})
-            ORDER BY created_at DESC
-            LIMIT ?""",
-        (*types, limit * 2),
-    ).fetchall()
-    conn.close()
-    entries = [_row_to_dict(r) for r in rows]
-    seen: set[str] = set()
-    unique: list[dict] = []
-    for e in entries:
-        sid = (e.get("source_id") or "").strip()
-        key = f"{e.get('source_type')}:{sid}" if sid else f"_{e.get('id')}"
-        if key not in seen:
-            seen.add(key)
-            unique.append(e)
-        if len(unique) >= limit:
-            break
-    if not unique:
-        return ""
-    parts = []
-    total = 0
-    for e in unique:
-        title = (e.get("title") or "").strip() or f"[{e.get('source_type')}]"
-        content = (e.get("content") or e.get("summary") or "").strip()
-        block = f"【{title}】{e.get('created_at', '')}\n\n{content}"
-        if total + len(block) > max_total_chars:
-            block = block[: max_total_chars - total - 20] + "\n...(已截断)"
-        parts.append(block)
-        total += len(block)
-        if total >= max_total_chars:
-            break
-    return "\n\n---\n\n".join(parts)
+class JsonFileBackend:
+    """sqlite3 不可用时的 fallback 后端，基于 JSON 文件。
+
+    适用于云端缺 sqlite3 的环境，功能与 SqliteBackend 尽量保持一致。
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[str, Any] | None = None
+
+    def _load(self) -> dict[str, Any]:
+        if self._data is not None:
+            return self._data
+        if os.path.isfile(JSON_PATH):
+            try:
+                with open(JSON_PATH, "r", encoding="utf-8") as f:
+                    self._data = json.load(f)
+            except Exception:
+                self._data = {"entries": [], "next_id": 1}
+        else:
+            self._data = {"entries": [], "next_id": 1}
+        if "entries" not in self._data or "next_id" not in self._data:
+            self._data = {"entries": [], "next_id": 1}
+        return self._data
+
+    def _save(self) -> None:
+        if self._data is None:
+            return
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(self._data, f, ensure_ascii=False, indent=2)
+
+    def _row_to_dict(self, row: dict[str, Any]) -> dict[str, Any]:
+        d = dict(row)
+        d.setdefault("agent_summary", "")
+        d.setdefault("agent_summary_status", "pending")
+        d.setdefault("content_hash", "")
+        return d
+
+    # 公共接口实现 ---------------------------------------------------------
+
+    def add_entry(
+        self,
+        source_type: str,
+        content: str,
+        source_id: str = "",
+        title: str = "",
+        summary: str = "",
+    ) -> int:
+        data = self._load()
+        entries: list[dict[str, Any]] = data.get("entries", [])
+        now = _now_iso()
+        sid = (source_id or "").strip()
+        content_hash = _compute_content_hash(content)
+        if sid:
+            for e in entries:
+                if e.get("source_type") == source_type and (e.get("source_id") or "") == sid:
+                    e.update(
+                        {
+                            "created_at": now,
+                            "title": title or "",
+                            "content": content,
+                            "summary": summary or "",
+                            "content_hash": content_hash,
+                            "agent_summary": "",
+                            "agent_summary_status": "pending",
+                        }
+                    )
+                    self._save()
+                    return int(e.get("id"))
+        new_id = int(data.get("next_id", 1))
+        entry = {
+            "id": new_id,
+            "created_at": now,
+            "source_type": source_type,
+            "source_id": sid,
+            "title": title or "",
+            "content": content,
+            "summary": summary or "",
+            "content_hash": content_hash,
+            "agent_summary": "",
+            "agent_summary_status": "pending",
+        }
+        entries.append(entry)
+        data["next_id"] = new_id + 1
+        self._save()
+        return new_id
+
+    def add_entry_with_dedup(
+        self,
+        source_type: str,
+        content: str,
+        source_id: str = "",
+        title: str = "",
+        summary: str = "",
+    ) -> tuple[int, str]:
+        clean_content = (content or "").strip()
+        if not clean_content:
+            return 0, "skipped"
+        data = self._load()
+        entries: list[dict[str, Any]] = data.get("entries", [])
+        now = _now_iso()
+        sid = (source_id or "").strip()
+        content_hash = _compute_content_hash(clean_content)
+        for e in entries:
+            if e.get("content_hash"):
+                if e.get("content_hash") == content_hash:
+                    return int(e.get("id")), "skipped"
+        if sid:
+            for e in entries:
+                if e.get("source_type") == source_type and (e.get("source_id") or "") == sid:
+                    e.update(
+                        {
+                            "created_at": now,
+                            "title": title or "",
+                            "content": clean_content,
+                            "summary": summary or "",
+                            "content_hash": content_hash,
+                            "agent_summary": "",
+                            "agent_summary_status": "pending",
+                        }
+                    )
+                    self._save()
+                    return int(e.get("id")), "updated"
+        new_id = int(data.get("next_id", 1))
+        entry = {
+            "id": new_id,
+            "created_at": now,
+            "source_type": source_type,
+            "source_id": sid,
+            "title": title or "",
+            "content": clean_content,
+            "summary": summary or "",
+            "content_hash": content_hash,
+            "agent_summary": "",
+            "agent_summary_status": "pending",
+        }
+        entries.append(entry)
+        data["next_id"] = new_id + 1
+        self._save()
+        return new_id, "added"
+
+    def _sorted_entries(self) -> list[dict[str, Any]]:
+        data = self._load()
+        entries: list[dict[str, Any]] = data.get("entries", [])
+        return sorted(entries, key=lambda e: e.get("created_at", ""), reverse=True)
+
+    def search(self, keyword: str, limit: int = 50) -> list[dict[str, Any]]:
+        if not keyword or not keyword.strip():
+            return self.list_recent(limit=limit)
+        kw = keyword.strip()
+        terms = [t.strip() for t in kw.split() if t.strip()]
+        if not terms:
+            return self.list_recent(limit=limit)
+        entries = [self._row_to_dict(e) for e in self._sorted_entries()]
+        results: list[dict[str, Any]] = []
+        for e in entries:
+            text = f"{e.get('title','')} {e.get('summary','')} {e.get('content','')}"
+            if all(t in text for t in terms):
+                results.append(e)
+        if not results:
+            return []
+
+        def score(e: dict[str, Any]) -> int:
+            text = f"{e.get('title','')} {e.get('summary','')} {e.get('content','')}"
+            return sum(1 for t in terms if t in text)
+
+        results.sort(key=lambda e: (score(e), e.get("created_at", "")), reverse=True)
+        return results[:limit]
+
+    def delete_entry(self, entry_id: int) -> bool:
+        data = self._load()
+        entries: list[dict[str, Any]] = data.get("entries", [])
+        before = len(entries)
+        entries[:] = [e for e in entries if int(e.get("id")) != int(entry_id)]
+        changed = len(entries) < before
+        if changed:
+            self._save()
+        return changed
+
+    def list_recent(self, limit: int = 50) -> list[dict[str, Any]]:
+        entries = self._sorted_entries()[:limit]
+        return [self._row_to_dict(e) for e in entries]
+
+    def update_agent_summary(self, entry_id: int, summary: str, status: str) -> bool:
+        data = self._load()
+        entries: list[dict[str, Any]] = data.get("entries", [])
+        for e in entries:
+            if int(e.get("id")) == int(entry_id):
+                e["agent_summary"] = summary or ""
+                e["agent_summary_status"] = status
+                self._save()
+                return True
+        return False
+
+    def list_import_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        entries = self._sorted_entries()[:limit]
+        return [self._row_to_dict(e) for e in entries]
+
+    def get_recent_for_agent(
+        self,
+        limit: int = 10,
+        max_content_len: int = 3000,
+        demand_only: bool = True,
+        include_test_cases: bool = False,
+    ) -> str:
+        entries = self._sorted_entries()
+        if demand_only and not include_test_cases:
+            types = set(DEMAND_SOURCE_TYPES)
+        elif include_test_cases:
+            types = set((*DEMAND_SOURCE_TYPES, TEST_CASES_SOURCE_TYPE))
+        else:
+            types = None
+        if types is not None:
+            entries = [e for e in entries if e.get("source_type") in types]
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for e in entries:
+            sid = (e.get("source_id") or "").strip()
+            key = f"{e.get('source_type')}:{sid}" if sid else f"_{e.get('id')}"
+            if key not in seen:
+                seen.add(key)
+                unique.append(self._row_to_dict(e))
+            if len(unique) >= limit:
+                break
+        if not unique:
+            return ""
+        parts: list[str] = []
+        per_len = max(200, max_content_len // len(unique))
+        for e in unique:
+            title = (e.get("title") or "").strip() or f"[{e.get('source_type')}]"
+            summary = (e.get("summary") or e.get("content", "")).strip()
+            if len(summary) > per_len:
+                summary = summary[:per_len] + "..."
+            parts.append(f"【{title}】{e.get('created_at', '')}\n{summary}")
+        return "\n\n---\n\n".join(parts)
+
+    def get_all_demands_full_for_chat(
+        self,
+        limit: int = 30,
+        max_total_chars: int = 80000,
+        include_test_cases: bool = True,
+    ) -> str:
+        entries = self._sorted_entries()
+        types = set((*DEMAND_SOURCE_TYPES, TEST_CASES_SOURCE_TYPE)) if include_test_cases else set(DEMAND_SOURCE_TYPES)
+        entries = [e for e in entries if e.get("source_type") in types]
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for e in entries:
+            sid = (e.get("source_id") or "").strip()
+            key = f"{e.get('source_type')}:{sid}" if sid else f"_{e.get('id')}"
+            if key not in seen:
+                seen.add(key)
+                unique.append(self._row_to_dict(e))
+            if len(unique) >= limit:
+                break
+        if not unique:
+            return ""
+        parts: list[str] = []
+        total = 0
+        for e in unique:
+            title = (e.get("title") or "").strip() or f"[{e.get('source_type')}]"
+            content = (e.get("content") or e.get("summary") or "").strip()
+            block = f"【{title}】{e.get('created_at', '')}\n\n{content}"
+            if total + len(block) > max_total_chars:
+                block = block[: max_total_chars - total - 20] + "\n...(已截断)"
+            parts.append(block)
+            total += len(block)
+            if total >= max_total_chars:
+                break
+        return "\n\n---\n\n".join(parts)
+
+    def get_entry_content(self, source_type: str, source_id: str) -> str | None:
+        data = self._load()
+        entries: list[dict[str, Any]] = data.get("entries", [])
+        for e in entries:
+            if e.get("source_type") == source_type and (e.get("source_id") or "") == source_id:
+                return str(e.get("content") or "")
+        return None
+
+    def list_for_browse(
+        self,
+        source_type_filter: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        entries = self._sorted_entries()
+        if source_type_filter and source_type_filter.strip():
+            entries = [e for e in entries if e.get("source_type") == source_type_filter.strip()]
+        entries = entries[:limit]
+        return [self._row_to_dict(e) for e in entries]
+
+
+if _SQLITE_AVAILABLE:
+    _backend: _MemoryBackend = SqliteBackend()
+else:
+    _backend = JsonFileBackend()
+
+
+def add_entry(
+    source_type: str,
+    content: str,
+    source_id: str = "",
+    title: str = "",
+    summary: str = "",
+) -> int:
+    return _backend.add_entry(source_type, content, source_id=source_id, title=title, summary=summary)
+
+
+def add_entry_with_dedup(
+    source_type: str,
+    content: str,
+    source_id: str = "",
+    title: str = "",
+    summary: str = "",
+) -> tuple[int, str]:
+    return _backend.add_entry_with_dedup(
+        source_type,
+        content,
+        source_id=source_id,
+        title=title,
+        summary=summary,
+    )
+
+
+def search(keyword: str, limit: int = 50) -> list[dict[str, Any]]:
+    return _backend.search(keyword, limit=limit)
+
+
+def delete_entry(entry_id: int) -> bool:
+    return _backend.delete_entry(entry_id)
+
+
+def list_recent(limit: int = 50) -> list[dict[str, Any]]:
+    return _backend.list_recent(limit=limit)
+
+
+def update_agent_summary(entry_id: int, summary: str, status: str) -> bool:
+    return _backend.update_agent_summary(entry_id, summary, status)
+
+
+def list_import_history(limit: int = 20) -> list[dict[str, Any]]:
+    return _backend.list_import_history(limit=limit)
+
+
+def get_recent_for_agent(
+    limit: int = 10,
+    max_content_len: int = 3000,
+    demand_only: bool = True,
+    include_test_cases: bool = False,
+) -> str:
+    return _backend.get_recent_for_agent(
+        limit=limit,
+        max_content_len=max_content_len,
+        demand_only=demand_only,
+        include_test_cases=include_test_cases,
+    )
+
+
+def get_all_demands_full_for_chat(
+    limit: int = 30,
+    max_total_chars: int = 80000,
+    include_test_cases: bool = True,
+) -> str:
+    return _backend.get_all_demands_full_for_chat(
+        limit=limit,
+        max_total_chars=max_total_chars,
+        include_test_cases=include_test_cases,
+    )
 
 
 def get_entry_content(source_type: str, source_id: str) -> str | None:
-    """按 source_type + source_id 获取条目的 content。不存在则返回 None。"""
-    conn = _get_conn()
-    _ensure_tables(conn)
-    row = conn.execute(
-        "SELECT content FROM memory_entries WHERE source_type = ? AND source_id = ?",
-        (source_type, source_id),
-    ).fetchone()
-    conn.close()
-    return row["content"] if row else None
+    return _backend.get_entry_content(source_type, source_id)
 
 
 def list_for_browse(
     source_type_filter: str = "",
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """供用户浏览：按时间倒序，可选按类型筛选。source_type_filter 为空则全部。"""
-    conn = _get_conn()
-    _ensure_tables(conn)
-    if source_type_filter and source_type_filter.strip():
-        rows = conn.execute(
-            """SELECT id, created_at, source_type, source_id, title, content, summary
-               FROM memory_entries WHERE source_type = ? ORDER BY created_at DESC LIMIT ?""",
-            (source_type_filter.strip(), limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT id, created_at, source_type, source_id, title, content, summary
-               FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
-    conn.close()
-    return [_row_to_dict(r) for r in rows]
+    return _backend.list_for_browse(source_type_filter=source_type_filter, limit=limit)

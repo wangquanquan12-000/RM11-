@@ -80,6 +80,14 @@ def refresh_context_cache_if_needed(
 
     try:
         client = genai.Client(api_key=gemini_key)
+        # 在创建新缓存前，尽量删除旧缓存，避免长时间堆积。
+        old_name = cache_name
+        if old_name:
+            try:
+                client.caches.delete(name=old_name)
+            except Exception:
+                # 删除失败不影响后续创建新缓存
+                pass
         cache = client.caches.create(
             model=gemini_model or "gemini-2.5-flash-lite",
             config=types.CreateCachedContentConfig(

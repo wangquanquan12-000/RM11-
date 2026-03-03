@@ -8,13 +8,158 @@
 
 ## 一、实施总览
 
-| 阶段 | 内容 | 涉及文件 |
-|------|------|----------|
-| 1 | 哈希指纹与去重 | memory_store.py、app_ui.py |
-| 2 | Metadata 层与历史记录表 | memory_store.py |
-| 3 | Librarian Agent 总结 | memory_store.py、新增或复用 agent 调用 |
-| 4 | Gemini Context Caching | crew_test.py、pipeline_service.py |
-| 5 | UI 历史记录与总结展示 | app_ui.py、config/ui_texts.yaml |
+| 阶段 | 内容 | 涉及文件 | 优先级 |
+|------|------|----------|--------|
+| **0** | **存储后端可插拔 + 惰性初始化（消除 sqlite3 硬依赖）** | **memory_store.py** | **P0 最高** |
+| 1 | 哈希指纹与去重 | memory_store.py、app_ui.py | P0 |
+| 2 | Metadata 层与历史记录表 | memory_store.py | P1 |
+| 3 | Librarian Agent 总结 | memory_store.py、新增或复用 agent 调用 | P1 |
+| 4 | Gemini Context Caching | crew_test.py、pipeline_service.py | P2 |
+| 5 | UI 历史记录与总结展示 | app_ui.py、config/ui_texts.yaml | P1 |
+
+---
+
+## 一-A、阶段 0：存储后端可插拔 + 惰性初始化（P0）
+
+> **目的**：彻底消除 `sqlite3` 硬依赖导致云端白屏的风险。详见 `docs/项目记忆-重新规划实施方案.md`。
+
+### 0.1 重构 memory_store.py 结构
+
+**之前**（崩溃结构）：
+```python
+import sqlite3          # ← 顶层，云端直接 ImportError
+def _get_conn():
+    conn = sqlite3.connect(...)  # ← 立即 IO
+```
+
+**之后**（安全结构）：
+```python
+import os, json, hashlib
+from typing import Any
+from datetime import datetime
+
+_SQLITE_AVAILABLE = False
+try:
+    import sqlite3
+    _SQLITE_AVAILABLE = True
+except ImportError:
+    pass
+
+class SqliteBackend:
+    """sqlite3 可用时使用，全功能。"""
+    def __init__(self):
+        self._conn = None           # 惰性：不在 __init__ 连接
+        self._tables_ready = False
+
+    def _get_conn(self):
+        if self._conn is None:
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            self._conn = sqlite3.connect(MEMORY_DB_PATH)
+            self._conn.row_factory = sqlite3.Row
+        if not self._tables_ready:
+            self._ensure_tables(self._conn)
+            self._tables_ready = True
+        return self._conn
+    # ... 其余方法与现有实现一致，仅移入 class 内
+
+class JsonFileBackend:
+    """sqlite3 不可用时的 fallback，纯 JSON 文件读写。"""
+    JSON_PATH = os.path.join(CONFIG_DIR, "memory_entries.json")
+
+    def __init__(self):
+        self._data = None  # 惰性
+
+    def _load(self):
+        if self._data is not None:
+            return self._data
+        if os.path.isfile(self.JSON_PATH):
+            with open(self.JSON_PATH, "r", encoding="utf-8") as f:
+                self._data = json.load(f)
+        else:
+            self._data = {"entries": [], "next_id": 1}
+        return self._data
+
+    def _save(self):
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(self.JSON_PATH, "w", encoding="utf-8") as f:
+            json.dump(self._data, f, ensure_ascii=False, indent=2)
+    # ... 实现与 SqliteBackend 相同的接口方法
+
+# 自动选择后端
+if _SQLITE_AVAILABLE:
+    _backend = SqliteBackend()
+else:
+    _backend = JsonFileBackend()
+
+# 对外函数全部委托给 _backend
+def add_entry(source_type, content, source_id="", title="", summary=""):
+    return _backend.add_entry(source_type, content, source_id, title, summary)
+
+def add_entry_with_dedup(source_type, content, source_id="", title="", summary=""):
+    return _backend.add_entry_with_dedup(source_type, content, source_id, title, summary)
+# ... 其余函数同理
+```
+
+### 0.2 JsonFileBackend 数据结构
+
+`config/memory_entries.json`：
+```json
+{
+  "entries": [
+    {
+      "id": 1,
+      "created_at": "2026-03-03T14:00:00",
+      "source_type": "manual",
+      "source_id": "",
+      "title": "直播分辨率ABtest",
+      "content": "...",
+      "summary": "",
+      "content_hash": "abcd1234...",
+      "agent_summary": "涵盖直播画质分流实验...",
+      "agent_summary_status": "success"
+    }
+  ],
+  "next_id": 2
+}
+```
+
+### 0.3 关键验证（必须通过才能上线）
+
+```bash
+# 模拟 sqlite3 不可用
+python -c "
+import sys
+# 屏蔽 sqlite3
+sys.modules['sqlite3'] = None
+import memory_store
+print('SQLITE_AVAILABLE:', memory_store._SQLITE_AVAILABLE)
+print('后端类型:', type(memory_store._backend).__name__)
+# 测试基础操作
+rid, status = memory_store.add_entry_with_dedup('manual', '测试内容', title='测试')
+print(f'add_entry_with_dedup: id={rid}, status={status}')
+results = memory_store.search('测试')
+print(f'search: {len(results)} 条')
+"
+```
+
+预期输出：
+```
+SQLITE_AVAILABLE: False
+后端类型: JsonFileBackend
+add_entry_with_dedup: id=1, status=added
+search: 1 条
+```
+
+### 0.4 调用方无需改动
+
+以下文件中的 import 已有保护，阶段 0 重构后它们完全不需要改动：
+
+| 文件 | 保护方式 | 说明 |
+|------|----------|------|
+| `app_ui.py:34-50` | try-except → MEMORY_AVAILABLE | 保留作为最后防线 |
+| `crew_test.py:852-858` | try-except → pass | Agent 上下文降级 |
+| `agent_knowledge_service.py:23` | try-except → return "" | 知识库构建降级 |
+| `app_ui.py:1468` | try-except | 文档问答降级 |
 
 ---
 
@@ -215,14 +360,24 @@ memory_tab:
 
 ## 七、实施顺序建议
 
-1. **阶段 1 + 2**：哈希、去重、Metadata 扩展，先保证「重复上传不入库」。
-2. **阶段 3**：Librarian Agent 总结，保证「新导入有总结可看」。
-3. **阶段 5**：UI 历史与总结展示，提升可用性。
-4. **阶段 4**：Gemini Context Caching，需确认 SDK 支持后再实施；若不支持，采用降级方案。
+1. **阶段 0（P0 最高）**：存储后端可插拔 + 惰性初始化，消除 sqlite3 硬依赖，通过 mock 验证后上线。
+2. **阶段 1 + 2**：哈希、去重、Metadata 扩展，先保证「重复上传不入库」。
+3. **阶段 3**：Librarian Agent 总结，保证「新导入有总结可看」。
+4. **阶段 5**：UI 历史与总结展示，提升可用性。
+5. **阶段 4**：Gemini Context Caching，需确认 SDK 支持后再实施；若不支持，采用降级方案。
 
 ---
 
 ## 八、回归与测试要点
+
+### 8.1 阶段 0 专项验证（P0）
+
+- **云端无 sqlite3**：`import memory_store` 不报错，`_SQLITE_AVAILABLE = False`，自动切换 JsonFileBackend。
+- **项目记忆可用性**：JsonFileBackend 下 add / search / delete / list_history 均正常。
+- **核心链路不受影响**：MEMORY_AVAILABLE = True 或 False 时，生成用例、文档问答均正常。
+- **Agent 上下文**：`get_project_context_for_agent()` 在任何后端状态下都正常返回。
+
+### 8.2 常规回归
 
 - 重复上传同一文档，第二次应提示「已跳过」，且 `memory_entries` 不新增记录。
 - 新导入后，`agent_summary` 应在合理时间内（如 30 秒内）生成并展示。

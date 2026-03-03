@@ -118,13 +118,6 @@ def _log_pipeline_result(
         # 写入失败时至少输出到 stderr，便于在终端/系统日志中看到
         import sys
         print(f"[pipeline] 日志写入失败: {e}", file=sys.stderr)
-from memory_store import (
-    TEST_CASES_SOURCE_TYPE,
-    add_entry,
-    get_entry_content,
-)
-
-
 class UploadToCasesResult(TypedDict):
     ok: bool
     error: str | None

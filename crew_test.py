@@ -11,6 +11,8 @@
   python crew_test.py -f demand.txt --export-sheets # 导出到 Google 表格（需配置 GOOGLE_SHEETS_CREDENTIALS_JSON）
   python crew_test.py -f demand.txt --local      # 本地模式：不调用 Gemini，用占位 LLM 跑完四 Agent 并导出 Excel
 """
+from __future__ import annotations
+
 import argparse
 import html as html_lib
 import json
