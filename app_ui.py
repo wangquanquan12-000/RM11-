@@ -916,11 +916,15 @@ def _render_upload_mode(T: dict, defaults: dict):
     仅 Excel 下载，不配置导出路径或 Sheets。"""
     st.caption("支持 .md / .docx（需求文档）和 .xlsx（既有测试用例），可混合选择。至少需 1 个需求文档。")
 
+    # 通过计数器改变 file_uploader 的 key 来重置组件（Streamlit 新版禁止直接赋值绑定 widget 的 session_state 键）
+    upload_reset_counter = st.session_state.get("run_upload_reset_counter", 0)
+    upload_widget_key = f"run_upload_files_{upload_reset_counter}"
+
     uploaded = st.file_uploader(
         "上传需求文档与既有用例",
         type=["md", "docx", "xlsx"],
         accept_multiple_files=True,
-        key="run_upload_files",
+        key=upload_widget_key,
         help="支持 .md、.docx（Word）、.xlsx，可混合选择；单文件 &lt; 10MB，总 &lt; 50MB",
     )
 
@@ -943,15 +947,15 @@ def _render_upload_mode(T: dict, defaults: dict):
         _MemoryUpload(item["name"], item["bytes"]) for item in cached_files
     ]
 
-    # 用户主动清空时才重置缓存，满足 F6-2 约束
+    # 用户主动清空时：递增计数器使 file_uploader key 改变，触发重置（不直接赋值 widget key）
     _upload_key = _get_module_state_key(MODULE_RUN, "upload_running")
     _upload_result_key = _get_module_state_key(MODULE_RUN, "upload_last_run")
     _upload_error_key = _get_module_state_key(MODULE_RUN, "upload_last_error")
     if st.button("清空已选文件", key="run_upload_reset"):
-        st.session_state["run_upload_files"] = None
+        st.session_state["run_upload_reset_counter"] = upload_reset_counter + 1
         st.session_state[_upload_result_key] = None
         st.session_state[_upload_error_key] = None
-        st.session_state.pop("run_upload_files_cache", None)
+        st.session_state.pop(cache_key, None)
         st.rerun()
 
     demand_md = ""
