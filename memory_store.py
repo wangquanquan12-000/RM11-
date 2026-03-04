@@ -355,22 +355,13 @@ class SqliteBackend:
         return cur.rowcount > 0
 
     def list_import_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """仅查询基础 7 列，agent_summary/agent_summary_status 由 _row_to_dict 兜底，避免云端旧表缺列或只读导致 ProgrammingError。"""
         conn = self._get_conn()
-        try:
-            rows = conn.execute(
-                """SELECT id, created_at, source_type, source_id, title, content, summary,
-                          COALESCE(agent_summary,'') as agent_summary,
-                          COALESCE(agent_summary_status,'pending') as agent_summary_status
-                   FROM memory_entries
-                   ORDER BY created_at DESC LIMIT ?""",
-                (limit,),
-            ).fetchall()
-        except Exception:
-            rows = conn.execute(
-                """SELECT id, created_at, source_type, source_id, title, content, summary
-                   FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
-                (limit,),
-            ).fetchall()
+        rows = conn.execute(
+            """SELECT id, created_at, source_type, source_id, title, content, summary
+               FROM memory_entries ORDER BY created_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
     def get_recent_for_agent(
@@ -796,10 +787,16 @@ class JsonFileBackend:
         return [self._row_to_dict(e) for e in entries]
 
 
-if _SQLITE_AVAILABLE:
-    _backend: _MemoryBackend = SqliteBackend()
-else:
-    _backend = JsonFileBackend()
+def _choose_backend() -> _MemoryBackend:
+    """云端（Streamlit Cloud 工作目录在 /mount/src）优先用 JSON 后端，避免 SQLite 只读/锁定导致 ProgrammingError。"""
+    if not _SQLITE_AVAILABLE:
+        return JsonFileBackend()
+    if os.path.exists("/mount/src"):
+        return JsonFileBackend()
+    return SqliteBackend()
+
+
+_backend: _MemoryBackend = _choose_backend()
 
 
 def add_entry(
@@ -829,7 +826,11 @@ def add_entry_with_dedup(
 
 
 def search(keyword: str, limit: int = 50) -> list[dict[str, Any]]:
-    return _backend.search(keyword, limit=limit)
+    """搜索记忆条目；若后端异常（如云端 SQLite 只读/锁定），返回空列表避免整页崩溃。"""
+    try:
+        return _backend.search(keyword, limit=limit)
+    except Exception:
+        return []
 
 
 def delete_entry(entry_id: int) -> bool:
@@ -850,7 +851,11 @@ def update_agent_summary(entry_id: int, summary: str, status: str) -> bool:
 
 
 def list_import_history(limit: int = 20) -> list[dict[str, Any]]:
-    return _backend.list_import_history(limit=limit)
+    """返回导入历史；若后端异常（如云端 SQLite 只读/锁定），返回空列表避免整页崩溃。"""
+    try:
+        return _backend.list_import_history(limit=limit)
+    except Exception:
+        return []
 
 
 def get_recent_for_agent(
