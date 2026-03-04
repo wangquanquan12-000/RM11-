@@ -77,6 +77,8 @@ class _MemoryBackend(Protocol):
 
     def list_import_history(self, limit: int = 20) -> list[dict[str, Any]]: ...
 
+    def clear_all_entries(self) -> bool: ...
+
     def get_recent_for_agent(
         self,
         limit: int = 10,
@@ -323,6 +325,14 @@ class SqliteBackend:
         cur = conn.execute("DELETE FROM memory_entries WHERE id = ?", (entry_id,))
         conn.commit()
         return cur.rowcount > 0
+
+    def clear_all_entries(self) -> bool:
+        """清空所有记忆条目（导入的需求文档、测试用例、设计图等），用于移除项目敏感数据。"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM memory_index")
+        conn.execute("DELETE FROM memory_entries")
+        conn.commit()
+        return True
 
     def list_recent(self, limit: int = 50) -> list[dict[str, Any]]:
         conn = self._get_conn()
@@ -668,6 +678,12 @@ class JsonFileBackend:
             self._save()
         return changed
 
+    def clear_all_entries(self) -> bool:
+        """清空所有记忆条目（导入的需求文档、测试用例、设计图等），用于移除项目敏感数据。"""
+        self._data = {"entries": [], "next_id": 1}
+        self._save()
+        return True
+
     def list_recent(self, limit: int = 50) -> list[dict[str, Any]]:
         entries = self._sorted_entries()[:limit]
         return [self._row_to_dict(e) for e in entries]
@@ -818,6 +834,11 @@ def search(keyword: str, limit: int = 50) -> list[dict[str, Any]]:
 
 def delete_entry(entry_id: int) -> bool:
     return _backend.delete_entry(entry_id)
+
+
+def clear_all_entries() -> bool:
+    """清空项目记忆库中所有条目（需求文档、测试用例、设计图等）。用于清除历史导入数据。"""
+    return _backend.clear_all_entries()
 
 
 def list_recent(limit: int = 50) -> list[dict[str, Any]]:

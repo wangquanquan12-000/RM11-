@@ -859,6 +859,19 @@ def get_project_context_for_agent(include_store: bool = True) -> str:
     return md_ctx
 
 
+def clear_project_memory(path: str | None = None) -> None:
+    """清空项目记忆摘要文件内容（如 project_memory.md），用于移除历史项目敏感信息。"""
+    p = path or PROJECT_MEMORY_PATH
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("")
+    try:
+        from context_cache_service import mark_context_cache_dirty
+        mark_context_cache_dirty("project_memory_cleared")
+    except ImportError:
+        pass
+
+
 def update_project_memory(addition: str, path: str | None = None, max_chars: int = 20000) -> None:
     """在项目记忆文件末尾追加一段摘要，便于 Agent 保持对项目的熟悉。若超过 max_chars 则只保留尾部。"""
     p = path or PROJECT_MEMORY_PATH

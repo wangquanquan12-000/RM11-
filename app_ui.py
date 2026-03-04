@@ -29,6 +29,7 @@ from crew_test import (
     parse_test_cases_file,
     parse_uploaded_files,
     update_project_memory,
+    clear_project_memory,
 )
 
 try:
@@ -36,6 +37,7 @@ try:
         TEST_CASES_SOURCE_TYPE,
         add_entry,
         add_entry_with_dedup,
+        clear_all_entries,
         delete_entry,
         get_entry_content,
         list_import_history,
@@ -1758,6 +1760,33 @@ def _render_module_memory(T: dict, defaults: dict):
                 st.rerun()
 
     st.divider()
+    # 清空项目记忆：移除所有导入的需求文档、测试用例、设计图及摘要（如 FAM 等历史数据）
+    with st.expander(_get_text(T, "memory_tab.clear_memory_section") or "清空项目记忆", expanded=False):
+        st.caption(_get_text(T, "memory_tab.clear_memory_caption") or "将删除所有已导入的需求文档、测试用例、设计图以及项目记忆摘要，且不可恢复。用于清除历史/敏感项目数据。")
+        confirm_clear = st.checkbox(_get_text(T, "memory_tab.clear_memory_confirm_label") or "我确认清空所有项目记忆数据", key="mem_clear_confirm")
+        if st.button(_get_text(T, "memory_tab.clear_memory_btn") or "清空项目记忆", key="mem_clear_btn", type="secondary", disabled=not confirm_clear):
+            try:
+                clear_all_entries()
+                clear_project_memory()
+                # 同时移除 Agent 知识库缓存，避免继续引用已清空的数据
+                try:
+                    from agent_knowledge_service import AGENT_KNOWLEDGE_PATH, AGENT_KNOWLEDGE_META_PATH
+                    for _p in (AGENT_KNOWLEDGE_PATH, AGENT_KNOWLEDGE_META_PATH):
+                        if os.path.isfile(_p):
+                            os.remove(_p)
+                except Exception:
+                    pass
+                try:
+                    from context_cache_service import mark_context_cache_dirty
+                    mark_context_cache_dirty("memory_cleared")
+                except ImportError:
+                    pass
+                st.success(_get_text(T, "memory_tab.clear_memory_success") or "已清空项目记忆")
+                st.rerun()
+            except Exception as e:
+                fail_tpl = _get_text(T, "memory_tab.clear_memory_fail") or "清空失败：{err}"
+                st.error(fail_tpl.replace("{err}", str(e)))
+
     with st.expander(_get_text(T, "memory_tab.memory_summary_section") or "项目记忆摘要（高级）", expanded=False):
         mem = load_project_memory()
         new_mem = st.text_area(
