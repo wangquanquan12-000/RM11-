@@ -14,27 +14,37 @@ python3 -m streamlit run app_ui.py --server.port 8501
 
 或执行 `./run_app.sh`（Mac/Linux）、双击 `run_app.bat`（Windows）。
 
-## 部署到 Streamlit Cloud（获得永久公网链接）
+## 部署到 Streamlit Community Cloud（share.streamlit.io）
 
-1. **推送本仓库到 GitHub**
+部署后即可获得**永久公网链接**（如 `https://xxx.streamlit.app`）。
+
+1. **把本仓库推到 GitHub**
    ```bash
    git add .
    git commit -m "init"
    git remote add origin https://github.com/你的用户名/你的仓库名.git
    git push -u origin main
    ```
+   （若默认分支是 `master`，上面改为 `git push -u origin master`。）
 
-2. **在 Streamlit Cloud 创建应用**
-   - 打开 [share.streamlit.io](https://share.streamlit.io)，用 GitHub 登录。
-   - 点击 **New app**，选择该仓库，主文件填 `app_ui.py`，分支选 `main`。
-   - 部署完成后会得到形如 `https://xxx.streamlit.app` 的**永久链接**。
+2. **在 [share.streamlit.io](https://share.streamlit.io) 创建应用**
+   - 用 **GitHub** 登录 [share.streamlit.io](https://share.streamlit.io)。
+   - 点击 **New app**。
+   - **Repository**：选刚推送的仓库（如 `你的用户名/你的仓库名`）。
+   - **Branch**：选 `main`（或 `master`）。
+   - **Main file path**：填 `app_ui.py`。
+   - 点击 **Deploy**，等待构建完成。
 
 3. **配置密钥（云端必填）**
-   - 在应用的 **Settings → Secrets** 中填写：
+   - 打开该应用的 **Settings → Secrets**，在 TOML 中填写：
    ```toml
    GEMINI_API_KEY = "你的 Gemini API Key"
    ```
-   - 应用会从环境变量读取，无需在界面反复粘贴。
+   可选：指定模型时增加一行：
+   ```toml
+   GEMINI_MODEL = "gemini-2.5-flash-lite"
+   ```
+   - 保存后应用会自动重载，无需在界面反复粘贴 Key。
 
 ## 项目结构
 

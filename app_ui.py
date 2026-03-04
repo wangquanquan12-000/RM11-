@@ -432,8 +432,12 @@ def _load_defaults():
         if secrets:
             if "gemini_key" in secrets and secrets["gemini_key"]:
                 out["gemini_key"] = str(secrets["gemini_key"])
+            elif "GEMINI_API_KEY" in secrets and secrets["GEMINI_API_KEY"]:
+                out["gemini_key"] = str(secrets["GEMINI_API_KEY"])
             if "gemini_model" in secrets and secrets["gemini_model"]:
                 out["gemini_model"] = str(secrets["gemini_model"])
+            elif "GEMINI_MODEL" in secrets and secrets["GEMINI_MODEL"]:
+                out["gemini_model"] = str(secrets["GEMINI_MODEL"])
     except Exception:
         # 本地开发或无 secrets 时静默忽略
         pass
