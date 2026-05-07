@@ -23,7 +23,6 @@ from datetime import datetime
 from typing import Any
 
 from crewai import Agent, Task, Crew
-from langchain_google_genai import ChatGoogleGenerativeAI
 
 try:
     import yaml
@@ -60,20 +59,45 @@ def _build_gemini_llm(
     model_name: str,
     gemini_api_key: str,
     cached_content_name: str = "",
-) -> ChatGoogleGenerativeAI:
-    """构建 Gemini LLM；若 SDK 支持则挂载 cached_content。"""
-    base_kwargs = {
-        "model": model_name,
-        "google_api_key": gemini_api_key,
-        "temperature": 0.4,
-    }
-    if cached_content_name:
-        try:
-            return ChatGoogleGenerativeAI(cached_content=cached_content_name, **base_kwargs)
-        except TypeError:
-            # 兼容不支持 cached_content 参数的版本
-            pass
-    return ChatGoogleGenerativeAI(**base_kwargs)
+) -> str:
+    """返回 CrewAI Agent 可用的 Gemini 模型 ID 字符串。
+
+    新版权限链只稳定接受 llm=<str>（如 gemini/gemini-2.5-flash-lite），
+    不要传入 LangChain 的 ChatGoogleGenerativeAI，否则会触发 Pydantic 校验错误。
+    cached_content_name 暂不通过此处注入（由各版本 crewai-litellm 支持度决定）。
+    """
+    normalized_model = (model_name or "").strip()
+    if "/" not in normalized_model:
+        normalized_model = f"gemini/{normalized_model}"
+    if gemini_api_key:
+        os.environ["GEMINI_API_KEY"] = gemini_api_key
+    _ = cached_content_name
+    return normalized_model
+
+
+def _normalize_agent_llm(llm: Any) -> str:
+    """Agent(llm=...) 仅传入模型字符串；拦截 LangChain Chat / crewai LLM 包装器等。"""
+    if isinstance(llm, str):
+        return llm
+    try:
+        cls_name = llm.__class__.__name__
+        mod_name = llm.__class__.__module__
+    except Exception:
+        return "gemini/gemini-2.5-flash-lite"
+    if cls_name == "ChatGoogleGenerativeAI" or "langchain_google_genai" in mod_name:
+        model_name = str(getattr(llm, "model", "") or "").strip() or "gemini-2.5-flash-lite"
+        if "/" not in model_name:
+            model_name = f"gemini/{model_name}"
+        return model_name
+    # crewai.utilities.types.LLM 等包装器常有 model / model_name
+    for attr in ("model", "model_name", "_model"):
+        raw = getattr(llm, attr, None)
+        if isinstance(raw, str) and raw.strip():
+            m = raw.strip()
+            if "/" not in m:
+                m = f"gemini/{m}"
+            return m
+    return "gemini/gemini-2.5-flash-lite"
 
 
 def _load_doc_filter_config() -> dict[str, Any]:
@@ -161,7 +185,7 @@ def _build_crew_from_config(
             role=a.get("role", ""),
             goal=a.get("goal", ""),
             backstory=(a.get("backstory") or "").strip(),
-            llm=llm,
+            llm=_normalize_agent_llm(llm),
             verbose=True,
         )
     task_map: dict[str, Task] = {}
@@ -230,7 +254,7 @@ def _run_crew_sequential(
             role=a.get("role", ""),
             goal=a.get("goal", ""),
             backstory=(a.get("backstory") or "").strip(),
-            llm=llm,
+            llm=_normalize_agent_llm(llm),
             verbose=True,
         )
 
@@ -376,7 +400,7 @@ def chat_with_document_agent(
             role=doubt_cfg.get("role", "Document Analyst"),
             goal=doubt_cfg.get("goal", "理解并分析产品需求文档"),
             backstory=(doubt_cfg.get("backstory") or "").strip() + "\n\n你现在需要基于文档内容，直接回答用户的问题。回答要准确、简洁、基于文档事实。",
-            llm=llm,
+            llm=_normalize_agent_llm(llm),
             verbose=True,
         )
     else:
@@ -384,7 +408,7 @@ def chat_with_document_agent(
             role="Document Analyst",
             goal="理解产品需求文档并准确回答用户问题",
             backstory="你是资深需求分析师，熟悉产品文档。根据文档内容回答用户问题，回答要基于文档事实。",
-            llm=llm,
+            llm=_normalize_agent_llm(llm),
             verbose=True,
         )
 
